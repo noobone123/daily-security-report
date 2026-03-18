@@ -1,0 +1,10 @@
+# Source definitions for daily-security-digest.
+# The agent will guide you through adding sources on first run.
+#
+# Example:
+#   [[sources]]
+#   id = "my-feed"
+#   title = "My Security Feed"
+#   kind = "rss"          # rss | github_user | web
+#   enabled = true
+#   fetch.url = "https://example.com/feed.xml"

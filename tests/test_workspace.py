@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from skill_lib import ValidationError, load_workspace, validate_workspace
+from skill_lib import ValidationError, format_source_toml, load_all_sources, load_workspace, remove_source_block, validate_workspace
 
 
 class WorkspaceTest(unittest.TestCase):
@@ -14,8 +14,8 @@ class WorkspaceTest(unittest.TestCase):
     def test_repo_sample_planning_is_valid(self) -> None:
         payload = validate_workspace(self.repo_root)
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["sources"], 5)
-        self.assertEqual(payload["enabled_sources"], 1)
+        self.assertEqual(payload["sources"], 0)
+        self.assertEqual(payload["enabled_sources"], 0)
 
     def test_workspace_rejects_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -38,6 +38,67 @@ class WorkspaceTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "missing 'kind'"):
                 load_workspace(root)
+
+    def test_format_source_toml_rss(self) -> None:
+        block = format_source_toml(
+            source_id="my-blog-feed",
+            title="My Blog Feed",
+            kind="rss",
+            enabled=True,
+            notes="Auto-detected RSS.",
+            fetch={"url": "https://example.com/feed.xml"},
+        )
+        self.assertIn('id = "my-blog-feed"', block)
+        self.assertIn('kind = "rss"', block)
+        self.assertIn("enabled = true", block)
+        self.assertIn('fetch.url = "https://example.com/feed.xml"', block)
+
+    def test_format_source_toml_rejects_bad_kind(self) -> None:
+        with self.assertRaises(ValidationError):
+            format_source_toml(
+                source_id="bad",
+                title="Bad",
+                kind="invalid",
+                fetch={"url": "https://x.com"},
+            )
+
+    def test_format_source_toml_roundtrips_through_tomllib(self) -> None:
+        import tomllib
+
+        block = format_source_toml(
+            source_id="rt-test",
+            title='Title with "quotes"',
+            kind="web",
+            fetch={"url": "https://example.com"},
+        )
+        data = tomllib.loads(block)
+        self.assertEqual(data["sources"][0]["id"], "rt-test")
+        self.assertEqual(data["sources"][0]["title"], 'Title with "quotes"')
+
+    def test_remove_source_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write_valid_workspace(root)
+            sources_path = root / "planning" / "sources.toml"
+            removed = remove_source_block(sources_path, "demo-source")
+            self.assertTrue(removed)
+            text = sources_path.read_text(encoding="utf-8")
+            self.assertNotIn("demo-source", text)
+
+    def test_remove_source_block_returns_false_for_missing_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write_valid_workspace(root)
+            sources_path = root / "planning" / "sources.toml"
+            removed = remove_source_block(sources_path, "nonexistent")
+            self.assertFalse(removed)
+
+    def test_empty_sources_toml_returns_empty_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sources.toml"
+            path.write_text("# No sources yet.\n", encoding="utf-8")
+            sources = load_all_sources(path)
+            self.assertEqual(sources, [])
 
     def _write_valid_workspace(self, root: Path) -> None:
         (root / "planning").mkdir(parents=True, exist_ok=True)

@@ -12,6 +12,10 @@ env/
 .env
 .env.*
 
+# User-specific planning files (created by agent during onboarding)
+planning/sources.toml
+planning/topics.md
+
 # Generated run data (keep data/runs/.gitkeep)
 data/runs/*/
 

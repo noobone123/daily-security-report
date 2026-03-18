@@ -19,9 +19,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace", default=".", help="Workspace root")
     parser.add_argument("--date", default=str(_date.today()), help="Collection date YYYY-MM-DD (default: today)")
     parser.add_argument("--timezone", default="Asia/Shanghai", help="IANA timezone name")
+    parser.add_argument("--days", type=int, default=None, help="Days to look back (default: auto-continue from last run, or 3 if first run)")
     args = parser.parse_args(argv)
     try:
-        manifest = run_collection(Path(args.workspace), date_slug=args.date, timezone=args.timezone)
+        manifest = run_collection(Path(args.workspace), date_slug=args.date, timezone=args.timezone, days=args.days)
     except (ValidationError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=False))
         return 1

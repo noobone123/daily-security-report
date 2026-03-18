@@ -6,7 +6,18 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from skill_lib import CollectedItem, dedupe_items, run_collection, sort_items
+from skill_lib import (
+    CollectedItem,
+    ValidationError,
+    build_day_window,
+    build_time_window,
+    dedupe_items,
+    find_last_window_end,
+    load_seen_urls,
+    run_collection,
+    sort_items,
+    write_json,
+)
 
 
 class CollectionTest(unittest.TestCase):
@@ -52,7 +63,7 @@ class CollectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             self._write_fixture_workspace(workspace)
-            manifest = run_collection(workspace, date_slug="2026-03-20", timezone="Asia/Shanghai")
+            manifest = run_collection(workspace, date_slug="2026-03-20", timezone="Asia/Shanghai", days=1)
             index_text = (workspace / "data" / "runs" / "2026-03-20" / "index.md").read_text(encoding="utf-8")
             self.assertEqual(manifest["item_count"], 0)
             self.assertIn("No items collected for this day.", index_text)
@@ -162,6 +173,120 @@ class CollectionTest(unittest.TestCase):
             content_text=content_text,
             language="en",
         )
+
+
+class ManifestFieldsTest(unittest.TestCase):
+    """Tests for manifest fields added in Feature 2 (warnings, collected_urls)."""
+
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.fixtures = self.repo_root / "tests" / "fixtures"
+
+    def test_manifest_has_warnings_and_collected_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            self._write_fixture_workspace(workspace)
+            manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+            self.assertIn("warnings", manifest)
+            self.assertIsInstance(manifest["warnings"], list)
+            self.assertIn("collected_urls", manifest)
+            self.assertIsInstance(manifest["collected_urls"], list)
+            self.assertIn("seen_urls", manifest)
+
+    def test_github_token_warning_when_unset(self) -> None:
+        import os
+        saved = os.environ.pop("GITHUB_TOKEN", None)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                workspace = Path(tmpdir)
+                self._write_fixture_workspace(workspace)
+                manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+                token_warnings = [w for w in manifest["warnings"] if "GITHUB_TOKEN" in w]
+                self.assertEqual(len(token_warnings), 1)
+        finally:
+            if saved is not None:
+                os.environ["GITHUB_TOKEN"] = saved
+
+    def _write_fixture_workspace(self, workspace: Path) -> None:
+        (workspace / "planning").mkdir(parents=True, exist_ok=True)
+        (workspace / "planning" / "report-style.md").write_text(
+            "# Report Style\n\n## Audience\n\nAnalyst.\n\n## Language\n\nEnglish.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nKeep it short.\n",
+            encoding="utf-8",
+        )
+        sources_toml = (
+            '[[sources]]\n'
+            'id = "fixture-github-user"\n'
+            'title = "Fixture GitHub User"\n'
+            'kind = "github_user"\n'
+            'enabled = true\n'
+            'fetch.handle = "sample-researcher"\n'
+            'fetch.events_url = "' + (self.fixtures / "github_user_events.json").resolve().as_uri() + '"\n'
+        )
+        (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
+
+
+class SeenUrlsTest(unittest.TestCase):
+    """Tests for cross-run dedup (Feature 3)."""
+
+    def test_load_seen_urls_returns_empty_for_no_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertEqual(load_seen_urls(Path(tmpdir)), set())
+
+    def test_load_seen_urls_reads_previous_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "data" / "runs" / "2026-03-17"
+            run_dir.mkdir(parents=True)
+            write_json(run_dir / "manifest.json", {"collected_urls": ["https://a.com", "https://b.com"]})
+            seen = load_seen_urls(root)
+            self.assertEqual(seen, {"https://a.com", "https://b.com"})
+
+    def test_load_seen_urls_excludes_current_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for slug, urls in [("2026-03-17", ["https://a.com"]), ("2026-03-18", ["https://b.com"])]:
+                run_dir = root / "data" / "runs" / slug
+                run_dir.mkdir(parents=True)
+                write_json(run_dir / "manifest.json", {"collected_urls": urls})
+            seen = load_seen_urls(root, exclude_date="2026-03-18")
+            self.assertIn("https://a.com", seen)
+            self.assertNotIn("https://b.com", seen)
+
+
+class TimeWindowTest(unittest.TestCase):
+    """Tests for time window construction (Feature 4)."""
+
+    def test_build_time_window_single_day_matches_build_day_window(self) -> None:
+        w1 = build_day_window("2026-03-18", "Asia/Shanghai")
+        w2 = build_time_window("2026-03-18", "Asia/Shanghai", days=1)
+        self.assertEqual(w1.start, w2.start)
+        self.assertEqual(w1.end, w2.end)
+
+    def test_build_time_window_multi_day(self) -> None:
+        w = build_time_window("2026-03-18", "Asia/Shanghai", days=3)
+        w_end = build_day_window("2026-03-18", "Asia/Shanghai")
+        self.assertEqual(w.end, w_end.end)
+        w_start_ref = build_day_window("2026-03-16", "Asia/Shanghai")
+        self.assertEqual(w.start, w_start_ref.start)
+
+    def test_build_time_window_rejects_zero_days(self) -> None:
+        with self.assertRaises(ValidationError):
+            build_time_window("2026-03-18", "Asia/Shanghai", days=0)
+
+    def test_find_last_window_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for slug, end in [("2026-03-16", "2026-03-17T00:00:00+00:00"), ("2026-03-17", "2026-03-18T00:00:00+00:00")]:
+                run_dir = root / "data" / "runs" / slug
+                run_dir.mkdir(parents=True)
+                write_json(run_dir / "manifest.json", {"window_end": end})
+            result = find_last_window_end(root)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.isoformat(), "2026-03-18T00:00:00+00:00")
+
+    def test_find_last_window_end_returns_none_for_no_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.assertIsNone(find_last_window_end(Path(tmpdir)))
 
 
 if __name__ == "__main__":

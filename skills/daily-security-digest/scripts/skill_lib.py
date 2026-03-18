@@ -147,12 +147,10 @@ def load_workspace(workspace_root: Path) -> WorkspaceSpec:
     sources_path = planning_dir / "sources.toml"
     report_style_path = planning_dir / "report-style.md"
 
-    if not sources_path.is_file():
-        raise ValidationError(f"Missing sources file: {sources_path}")
     if not report_style_path.exists():
         raise ValidationError(f"Missing report style file: {report_style_path}")
 
-    sources = load_all_sources(sources_path)
+    sources = load_all_sources(sources_path) if sources_path.is_file() else []
     report_style = load_report_style(report_style_path)
     return WorkspaceSpec(root=root, sources=sources, report_style=report_style)
 
@@ -165,7 +163,7 @@ def load_all_sources(path: Path) -> list[SourceSpec]:
             raise ValidationError(f"{path}: TOML parse error: {exc}") from exc
     entries = data.get("sources", [])
     if not entries:
-        raise ValidationError(f"{path}: no [[sources]] entries found")
+        return []
     sources: list[SourceSpec] = []
     seen_ids: set[str] = set()
     for entry in entries:
@@ -217,16 +215,28 @@ def load_report_style(path: Path) -> ReportStyle:
     )
 
 
-def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> dict[str, Any]:
+def run_collection(workspace_root: Path, *, date_slug: str, timezone: str, days: int | None = None) -> dict[str, Any]:
     workspace = load_workspace(workspace_root)
-    window = build_day_window(date_slug, timezone)
+    # Build time window: explicit --days > auto-continue from last run > 3-day default
+    if days is not None:
+        window = build_time_window(date_slug, timezone, days=days)
+    else:
+        last_end = find_last_window_end(workspace.root, exclude_date=date_slug)
+        if last_end is not None:
+            window = build_time_window(date_slug, timezone, since=last_end)
+        else:
+            window = build_time_window(date_slug, timezone, days=3)
+    seen_urls = load_seen_urls(workspace.root, exclude_date=date_slug)
     client = HttpClient(github_token=os.environ.get("GITHUB_TOKEN"))
     fetched_at = datetime.now(tz=UTC)
     raw_count = 0
     failures: list[dict[str, str]] = []
+    warnings: list[str] = []
     items: list[CollectedItem] = []
     script_sources = [s for s in workspace.enabled_sources if s.kind != "web"]
     agent_sources = [s for s in workspace.enabled_sources if s.kind == "web"]
+    if any(s.kind == "github_user" for s in script_sources) and not client.github_token:
+        warnings.append("GITHUB_TOKEN not set. GitHub API rate limit is 60 requests/hour. Set the environment variable for 5000 req/hr.")
     for source in script_sources:
         try:
             raw_records = fetch_raw_records(source, client=client, fetched_at=fetched_at)
@@ -235,6 +245,10 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
         except Exception as exc:  # noqa: BLE001
             failures.append({"source_id": source.id, "error": str(exc)})
     deduped_items = sort_items(dedupe_items(items))
+    # Cross-run dedup: filter out items already collected in previous runs
+    if seen_urls:
+        deduped_items = [item for item in deduped_items if item.canonical_url not in seen_urls]
+    collected_urls = [item.canonical_url for item in deduped_items if item.canonical_url]
     run_dir = workspace.root / "data" / "runs" / date_slug
     item_dir = run_dir / "items"
     _prepare_run_dir(item_dir)
@@ -252,6 +266,7 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
             window=window,
             items=deduped_items,
             failures=failures,
+            warnings=warnings,
         ),
         encoding="utf-8",
     )
@@ -267,6 +282,9 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
         "item_count": len(deduped_items),
         "failure_count": len(failures),
         "failures": failures,
+        "warnings": warnings,
+        "collected_urls": collected_urls,
+        "seen_urls": sorted(seen_urls),
         "item_files": item_files,
         "agent_sources": [
             {"id": s.id, "title": s.title, "url": s.fetch.get("url", "")}
@@ -316,6 +334,7 @@ def render_index_markdown(
     window: TimeWindow,
     items: list[CollectedItem],
     failures: list[dict[str, str]],
+    warnings: list[str] | None = None,
 ) -> str:
     zone = ZoneInfo(timezone)
     lines = [
@@ -343,6 +362,13 @@ def render_index_markdown(
     if failures:
         for failure in failures:
             lines.append(f"- {failure['source_id']}: {failure['error']}")
+    else:
+        lines.append("- None.")
+    lines.extend(["", "## Warnings", ""])
+    actual_warnings = warnings or []
+    if actual_warnings:
+        for warning in actual_warnings:
+            lines.append(f"- {warning}")
     else:
         lines.append("- None.")
     lines.extend(["", "## Items", ""])
@@ -395,11 +421,28 @@ def render_item_markdown(item: CollectedItem, source: SourceSpec, timezone: str)
 
 
 def build_day_window(date_slug: str, timezone: str) -> TimeWindow:
+    return build_time_window(date_slug, timezone)
+
+
+def build_time_window(date_slug: str, timezone: str, *, since: datetime | None = None, days: int | None = None) -> TimeWindow:
+    """Build a collection time window.
+
+    - ``since`` given → use it as start, end = midnight after date_slug
+    - ``days`` given  → start = end - days
+    - neither         → single-day window (equivalent to days=1)
+    """
     target_date = date.fromisoformat(date_slug)
     zone = ZoneInfo(timezone)
-    start_local = datetime.combine(target_date, time.min, tzinfo=zone)
-    end_local = start_local + timedelta(days=1)
-    return TimeWindow(start=start_local.astimezone(UTC), end=end_local.astimezone(UTC))
+    end_local = datetime.combine(target_date + timedelta(days=1), time.min, tzinfo=zone)
+    if since is not None:
+        start = ensure_utc(since)
+    elif days is not None:
+        if days < 1:
+            raise ValidationError("days must be >= 1")
+        start = (end_local - timedelta(days=days)).astimezone(UTC)
+    else:
+        start = datetime.combine(target_date, time.min, tzinfo=zone).astimezone(UTC)
+    return TimeWindow(start=start, end=end_local.astimezone(UTC))
 
 
 def build_summary(item: CollectedItem) -> str:
@@ -409,6 +452,46 @@ def build_summary(item: CollectedItem) -> str:
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+
+
+def _scan_previous_manifests(workspace_root: Path, *, exclude_date: str | None = None) -> list[dict[str, Any]]:
+    """Return parsed manifest dicts from previous runs, sorted by date."""
+    runs_dir = workspace_root / "data" / "runs"
+    if not runs_dir.is_dir():
+        return []
+    results: list[dict[str, Any]] = []
+    for manifest_path in sorted(runs_dir.glob("*/manifest.json")):
+        date_slug = manifest_path.parent.name
+        if exclude_date and date_slug == exclude_date:
+            continue
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            results.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return results
+
+
+def load_seen_urls(workspace_root: Path, *, exclude_date: str | None = None) -> set[str]:
+    """Collect all previously collected URLs from historical manifests."""
+    seen: set[str] = set()
+    for manifest in _scan_previous_manifests(workspace_root, exclude_date=exclude_date):
+        for url in manifest.get("collected_urls", []):
+            seen.add(url)
+    return seen
+
+
+def find_last_window_end(workspace_root: Path, *, exclude_date: str | None = None) -> datetime | None:
+    """Find the most recent window_end from previous runs."""
+    latest: datetime | None = None
+    for manifest in _scan_previous_manifests(workspace_root, exclude_date=exclude_date):
+        raw = manifest.get("window_end")
+        if not raw:
+            continue
+        parsed = parse_datetime(raw)
+        if parsed and (latest is None or parsed > latest):
+            latest = parsed
+    return latest
 
 
 def slugify(value: str) -> str:
@@ -771,3 +854,57 @@ def _in_window(timestamp: datetime, window: TimeWindow) -> bool:
 
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _escape_toml(value: str) -> str:
+    """Escape a string for use in a TOML double-quoted value."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def format_source_toml(
+    *,
+    source_id: str,
+    title: str,
+    kind: str,
+    enabled: bool = True,
+    notes: str = "",
+    fetch: dict[str, str],
+) -> str:
+    """Return a single ``[[sources]]`` TOML block ready to append to sources.toml."""
+    sid = slugify(source_id)
+    if kind not in ALLOWED_SOURCE_KINDS:
+        raise ValidationError(f"Unknown source kind: {kind!r}")
+    _validate_fetch(Path("(generated)"), kind, {k: str(v) for k, v in fetch.items()})
+    lines = [
+        "[[sources]]",
+        f'id = "{sid}"',
+        f'title = "{_escape_toml(title)}"',
+        f'kind = "{kind}"',
+        f"enabled = {'true' if enabled else 'false'}",
+    ]
+    if notes:
+        lines.append(f'notes = "{_escape_toml(notes)}"')
+    for k, v in fetch.items():
+        lines.append(f'fetch.{k} = "{_escape_toml(str(v))}"')
+    return "\n".join(lines) + "\n"
+
+
+def remove_source_block(sources_path: Path, source_id: str) -> bool:
+    """Remove a ``[[sources]]`` block by id from a TOML file. Returns True if found."""
+    text = sources_path.read_text(encoding="utf-8")
+    blocks = re.split(r"(?=^\[\[sources\]\])", text, flags=re.MULTILINE)
+    new_blocks = []
+    removed = False
+    for block in blocks:
+        if not block.strip():
+            continue
+        if f'id = "{source_id}"' in block:
+            removed = True
+            continue
+        new_blocks.append(block)
+    if removed:
+        sources_path.write_text(
+            "\n".join(b.strip() for b in new_blocks) + "\n",
+            encoding="utf-8",
+        )
+    return removed
