@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables (may contain GITHUB_TOKEN etc.)
+.env
+.env.*
+
+# Generated run data (keep data/runs/.gitkeep)
+data/runs/*/
+
+# Generated reports written by the calling agent
+report.md
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

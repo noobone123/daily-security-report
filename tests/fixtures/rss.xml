@@ -1,0 +1,13 @@
+<rss version="2.0">
+  <channel>
+    <title>Example Security Feed</title>
+    <item>
+      <title>Cloud Detection Rule Update</title>
+      <link>https://example.com/blog/cloud-detection-rule-update</link>
+      <description>New Sigma and YARA rules for unusual IAM role abuse.</description>
+      <pubDate>Tue, 18 Mar 2026 02:30:00 +0000</pubDate>
+      <author>feed-author</author>
+      <guid>rss-item-1</guid>
+    </item>
+  </channel>
+</rss>
