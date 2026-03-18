@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date as _date
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -16,7 +17,7 @@ from skill_lib import ValidationError, run_collection
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch enabled security sources into local Markdown materials.")
     parser.add_argument("--workspace", default=".", help="Workspace root")
-    parser.add_argument("--date", required=True, help="Collection date in YYYY-MM-DD")
+    parser.add_argument("--date", default=str(_date.today()), help="Collection date YYYY-MM-DD (default: today)")
     parser.add_argument("--timezone", default="Asia/Shanghai", help="IANA timezone name")
     args = parser.parse_args(argv)
     try:

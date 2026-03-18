@@ -23,6 +23,8 @@ class CollectionTest(unittest.TestCase):
             index_path = run_dir / "index.md"
             manifest_path = run_dir / "manifest.json"
             self.assertGreater(manifest["item_count"], 0)
+            self.assertIn("agent_sources", manifest)
+            self.assertEqual(len(manifest["agent_sources"]), 2)  # fixture-web + fixture-conference
             self.assertTrue(index_path.exists())
             self.assertTrue(manifest_path.exists())
             self.assertFalse((run_dir / "report.md").exists())
@@ -97,18 +99,6 @@ class CollectionTest(unittest.TestCase):
             "# Report Style\n\n## Audience\n\nDaily operator.\n\n## Language\n\nChinese commentary.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nPrefer high signal.\n",
             encoding="utf-8",
         )
-        (workspace / "planning" / "topics.md").write_text(
-            "# Topics\n\n"
-            "## Browser Exploitation\n\n"
-            "### Care About\n\nBrowser exploit research.\n\n"
-            "### Usually Ignore\n\nMarketing.\n\n"
-            "### Reporting Angle\n\nFocus on root cause and exploitability.\n\n"
-            "## Cloud Detection\n\n"
-            "### Care About\n\nCloud detection research.\n\n"
-            "### Usually Ignore\n\nGeneric marketing.\n\n"
-            "### Reporting Angle\n\nFocus on practical detections.\n",
-            encoding="utf-8",
-        )
         rss_url = "file:///definitely-missing-feed.xml" if broken_rss else self._uri("rss.xml")
         sources_toml = (
             '[[sources]]\n'
@@ -116,52 +106,33 @@ class CollectionTest(unittest.TestCase):
             'title = "Fixture GitHub User"\n'
             'kind = "github_user"\n'
             'enabled = true\n'
-            'topics = ["browser-exploitation"]\n'
             'notes = "Fixture source."\n'
             'fetch.handle = "sample-researcher"\n'
             'fetch.events_url = "' + self._uri("github_user_events.json") + '"\n'
-            '\n'
-            '[[sources]]\n'
-            'id = "fixture-github-repo"\n'
-            'title = "Fixture GitHub Repo"\n'
-            'kind = "github_repo"\n'
-            'enabled = true\n'
-            'topics = ["browser-exploitation", "cloud-detection"]\n'
-            'notes = "Fixture source."\n'
-            'fetch.repo = "sample-org/security-repo"\n'
-            'fetch.releases_url = "' + self._uri("github_repo_releases.json") + '"\n'
-            'fetch.tags_url = "' + self._uri("github_repo_tags.json") + '"\n'
             '\n'
             '[[sources]]\n'
             'id = "fixture-rss"\n'
             'title = "Fixture RSS"\n'
             'kind = "rss"\n'
             'enabled = true\n'
-            'topics = ["cloud-detection"]\n'
             'notes = "Fixture source."\n'
             'fetch.url = "' + rss_url + '"\n'
             '\n'
             '[[sources]]\n'
             'id = "fixture-web"\n'
             'title = "Fixture Web"\n'
-            'kind = "web_page"\n'
+            'kind = "web"\n'
             'enabled = true\n'
-            'topics = ["browser-exploitation"]\n'
             'notes = "Fixture source."\n'
-            'fetch.url = "' + self._uri("web_index.html") + '"\n'
-            'fetch.link_selector = ".post-list a"\n'
-            'fetch.body_selector = "article"\n'
+            'fetch.url = "https://example.com/research/"\n'
             '\n'
             '[[sources]]\n'
             'id = "fixture-conference"\n'
             'title = "Fixture Conference"\n'
-            'kind = "conference_page"\n'
+            'kind = "web"\n'
             'enabled = true\n'
-            'topics = ["cloud-detection"]\n'
             'notes = "Fixture source."\n'
-            'fetch.url = "' + self._uri("conference_index.html") + '"\n'
-            'fetch.link_selector = ".schedule a"\n'
-            'fetch.body_selector = "article"\n'
+            'fetch.url = "https://example.com/conference/program/"\n'
         )
         (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
 
@@ -180,7 +151,7 @@ class CollectionTest(unittest.TestCase):
         return CollectedItem(
             item_id=item_id,
             source_id="fixture-web",
-            kind="web_page",
+            kind="web",
             external_id=item_id,
             canonical_url=canonical_url,
             title=item_id,

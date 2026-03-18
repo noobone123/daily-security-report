@@ -16,22 +16,10 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
-from html_extract import (
-    extract_author,
-    extract_body_text,
-    extract_links,
-    extract_published_at,
-    extract_title,
-    filter_same_host,
-    parse_html,
-)
-
 ALLOWED_SOURCE_KINDS = {
     "github_user",
-    "github_repo",
     "rss",
-    "web_page",
-    "conference_page",
+    "web",
 }
 ALLOWED_GITHUB_USER_EVENTS = {
     "ReleaseEvent",
@@ -56,18 +44,8 @@ class SourceSpec:
     title: str
     kind: str
     enabled: bool
-    topics: list[str]
     fetch: dict[str, str]
     notes: str
-
-
-@dataclass(slots=True)
-class TopicSpec:
-    id: str
-    name: str
-    care_about: str
-    usually_ignore: str
-    reporting_angle: str
 
 
 @dataclass(slots=True)
@@ -83,7 +61,6 @@ class ReportStyle:
 class WorkspaceSpec:
     root: Path
     sources: list[SourceSpec]
-    topics: dict[str, TopicSpec]
     report_style: ReportStyle
 
     @property
@@ -160,7 +137,6 @@ def validate_workspace(workspace_root: Path) -> dict[str, Any]:
         "workspace": str(workspace.root),
         "sources": len(workspace.sources),
         "enabled_sources": len(workspace.enabled_sources),
-        "topics": len(workspace.topics),
         "report_style": True,
     }
 
@@ -169,23 +145,19 @@ def load_workspace(workspace_root: Path) -> WorkspaceSpec:
     root = workspace_root.resolve()
     planning_dir = root / "planning"
     sources_path = planning_dir / "sources.toml"
-    topics_path = planning_dir / "topics.md"
     report_style_path = planning_dir / "report-style.md"
 
     if not sources_path.is_file():
         raise ValidationError(f"Missing sources file: {sources_path}")
-    if not topics_path.is_file():
-        raise ValidationError(f"Missing topics file: {topics_path}")
     if not report_style_path.exists():
         raise ValidationError(f"Missing report style file: {report_style_path}")
 
-    topics = load_all_topics(topics_path)
-    sources = load_all_sources(topics, sources_path)
+    sources = load_all_sources(sources_path)
     report_style = load_report_style(report_style_path)
-    return WorkspaceSpec(root=root, sources=sources, topics=topics, report_style=report_style)
+    return WorkspaceSpec(root=root, sources=sources, report_style=report_style)
 
 
-def load_all_sources(topics: dict[str, TopicSpec], path: Path) -> list[SourceSpec]:
+def load_all_sources(path: Path) -> list[SourceSpec]:
     with path.open("rb") as f:
         try:
             data = tomllib.load(f)
@@ -215,12 +187,6 @@ def load_all_sources(topics: dict[str, TopicSpec], path: Path) -> list[SourceSpe
         enabled_raw = entry.get("enabled")
         if not isinstance(enabled_raw, bool):
             raise ValidationError(f"{path}: source '{source_id}' 'enabled' must be a boolean (true/false)")
-        topic_ids = list(entry.get("topics", []))
-        if not topic_ids:
-            raise ValidationError(f"{path}: source '{source_id}' 'topics' must have at least one entry")
-        unknown = [t for t in topic_ids if t not in topics]
-        if unknown:
-            raise ValidationError(f"{path}: source '{source_id}' unknown topic id(s): {', '.join(unknown)}")
         fetch = {k: str(v) for k, v in entry.get("fetch", {}).items()}
         _validate_fetch(path, kind, fetch)
         seen_ids.add(source_id)
@@ -229,69 +195,10 @@ def load_all_sources(topics: dict[str, TopicSpec], path: Path) -> list[SourceSpe
             title=title,
             kind=kind,
             enabled=enabled_raw,
-            topics=topic_ids,
             fetch=fetch,
             notes=str(entry.get("notes", "")).strip(),
         ))
     return sources
-
-
-def load_all_topics(path: Path) -> dict[str, TopicSpec]:
-    text = path.read_text(encoding="utf-8")
-    if not text.strip():
-        raise ValidationError(f"{path}: file cannot be empty")
-    required_subs = ("Care About", "Usually Ignore", "Reporting Angle")
-    topics: dict[str, TopicSpec] = {}
-    current_name: str | None = None
-    current_sub: str | None = None
-    sub_lines: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            if current_name is not None:
-                _add_topic(path, current_name, sub_lines, required_subs, topics)
-            current_name = stripped[3:].strip()
-            sub_lines = {}
-            current_sub = None
-        elif stripped.startswith("### ") and current_name is not None:
-            heading = stripped[4:].strip()
-            if heading not in required_subs:
-                raise ValidationError(f"{path}: unsupported sub-section '### {heading}' in topic '{current_name}'")
-            if heading in sub_lines:
-                raise ValidationError(f"{path}: duplicate sub-section '### {heading}' in topic '{current_name}'")
-            sub_lines[heading] = []
-            current_sub = heading
-        elif stripped.startswith("# "):
-            continue
-        elif current_sub is not None:
-            sub_lines[current_sub].append(line.rstrip())
-    if current_name is not None:
-        _add_topic(path, current_name, sub_lines, required_subs, topics)
-    if not topics:
-        raise ValidationError(f"{path}: no topics found (use '## Heading' for each topic)")
-    return topics
-
-
-def _add_topic(
-    path: Path,
-    name: str,
-    sub_lines: dict[str, list[str]],
-    required_subs: tuple[str, ...],
-    topics: dict[str, TopicSpec],
-) -> None:
-    topic_id = slugify(name)
-    if topic_id in topics:
-        raise ValidationError(f"{path}: duplicate topic name '{name}'")
-    for sub in required_subs:
-        if sub not in sub_lines or not any(line.strip() for line in sub_lines[sub]):
-            raise ValidationError(f"{path}: topic '{name}' missing required sub-section '### {sub}'")
-    topics[topic_id] = TopicSpec(
-        id=topic_id,
-        name=name,
-        care_about=_section_text(path, "Care About", sub_lines["Care About"]),
-        usually_ignore=_section_text(path, "Usually Ignore", sub_lines["Usually Ignore"]),
-        reporting_angle=_section_text(path, "Reporting Angle", sub_lines["Reporting Angle"]),
-    )
 
 
 def load_report_style(path: Path) -> ReportStyle:
@@ -318,7 +225,9 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
     raw_count = 0
     failures: list[dict[str, str]] = []
     items: list[CollectedItem] = []
-    for source in workspace.enabled_sources:
+    script_sources = [s for s in workspace.enabled_sources if s.kind != "web"]
+    agent_sources = [s for s in workspace.enabled_sources if s.kind == "web"]
+    for source in script_sources:
         try:
             raw_records = fetch_raw_records(source, client=client, fetched_at=fetched_at)
             raw_count += len(raw_records)
@@ -359,6 +268,10 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
         "failure_count": len(failures),
         "failures": failures,
         "item_files": item_files,
+        "agent_sources": [
+            {"id": s.id, "title": s.title, "url": s.fetch.get("url", "")}
+            for s in agent_sources
+        ],
     }
     write_json(run_dir / "manifest.json", manifest)
     return manifest
@@ -367,12 +280,8 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str) -> di
 def fetch_raw_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
     if source.kind == "github_user":
         return _fetch_github_user_records(source, client=client, fetched_at=fetched_at)
-    if source.kind == "github_repo":
-        return _fetch_github_repo_records(source, client=client, fetched_at=fetched_at)
     if source.kind == "rss":
         return _fetch_rss_records(source, client=client, fetched_at=fetched_at)
-    if source.kind in {"web_page", "conference_page"}:
-        return _fetch_page_records(source, client=client, fetched_at=fetched_at)
     raise FetchError(f"Unsupported source kind: {source.kind}")
 
 
@@ -427,7 +336,7 @@ def render_index_markdown(
     ]
     if workspace.enabled_sources:
         for source in workspace.enabled_sources:
-            lines.append(f"- {source.title} (`{source.id}`) | kind: {source.kind} | topics: {', '.join(source.topics)}")
+            lines.append(f"- {source.title} (`{source.id}`) | kind: {source.kind}")
     else:
         lines.append("- No enabled sources.")
     lines.extend(["", "## Failures", ""])
@@ -448,7 +357,6 @@ def render_index_markdown(
                     f"### [{item.title}]({item.canonical_url})",
                     "",
                     f"- Source: {source.title} (`{source.id}`)",
-                    f"- Topics: {', '.join(source.topics)}",
                     f"- Timestamp: {item.timestamp().astimezone(zone).isoformat()}",
                     f"- Summary: {build_summary(item)}",
                     f"- Item File: [items/{item.item_id}.md](items/{item.item_id}.md)",
@@ -466,32 +374,23 @@ def render_item_markdown(item: CollectedItem, source: SourceSpec, timezone: str)
         "",
         f"{source.title} (`{source.id}`)",
         "",
-        "## Topics",
+        "## Published At",
+        "",
+        item.timestamp().astimezone(ZoneInfo(timezone)).isoformat(),
+        "",
+        "## URL",
+        "",
+        item.canonical_url,
+        "",
+        "## Summary",
+        "",
+        build_summary(item),
+        "",
+        "## Content",
+        "",
+        item.content_text or item.title,
         "",
     ]
-    for topic_id in source.topics:
-        lines.append(f"- {topic_id}")
-    lines.extend(
-        [
-            "",
-            "## Published At",
-            "",
-            item.timestamp().astimezone(ZoneInfo(timezone)).isoformat(),
-            "",
-            "## URL",
-            "",
-            item.canonical_url,
-            "",
-            "## Summary",
-            "",
-            build_summary(item),
-            "",
-            "## Content",
-            "",
-            item.content_text or item.title,
-            "",
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -614,14 +513,10 @@ def _section_text(path: Path, heading: str, lines: list[str]) -> str:
 def _validate_fetch(path: Path, kind: str, fetch: dict[str, str]) -> None:
     if kind == "github_user" and not (fetch.get("handle") or fetch.get("events_url")):
         raise ValidationError(f"{path}: github_user requires 'handle' or 'events_url'")
-    if kind == "github_repo" and not (
-        fetch.get("repo") or fetch.get("releases_url") or fetch.get("tags_url") or fetch.get("page_url")
-    ):
-        raise ValidationError(f"{path}: github_repo requires 'repo' or at least one explicit URL")
     if kind == "rss" and not fetch.get("url"):
         raise ValidationError(f"{path}: rss requires 'url'")
-    if kind in {"web_page", "conference_page"} and not fetch.get("url"):
-        raise ValidationError(f"{path}: {kind} requires 'url'")
+    if kind == "web" and not fetch.get("url"):
+        raise ValidationError(f"{path}: web source requires 'url'")
 
 
 def _fetch_github_user_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
@@ -646,58 +541,6 @@ def _fetch_github_user_records(source: SourceSpec, *, client: HttpClient, fetche
     return rows
 
 
-def _fetch_github_repo_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
-    repo = source.fetch.get("repo", "")
-    rows: list[RawRecord] = []
-    releases_url = source.fetch.get("releases_url") or (f"https://api.github.com/repos/{repo}/releases" if repo else "")
-    if releases_url:
-        payload = client.get_json(releases_url)
-        if not isinstance(payload, list):
-            raise FetchError(f"{source.id}: expected release payload list from {releases_url}")
-        for release in payload[: _fetch_int(source.fetch, "max_releases", 15)]:
-            release_id = str(release.get("id", release.get("tag_name", len(rows))))
-            rows.append(
-                RawRecord(
-                    raw_id=stable_id(source.id, "github_repo_release", release_id),
-                    source_id=source.id,
-                    fetched_at=fetched_at,
-                    source_url=releases_url,
-                    payload={"record_kind": "release", "item": release},
-                )
-            )
-    tags_url = source.fetch.get("tags_url") or (f"https://api.github.com/repos/{repo}/tags" if repo else "")
-    if tags_url:
-        payload = client.get_json(tags_url)
-        if not isinstance(payload, list):
-            raise FetchError(f"{source.id}: expected tag payload list from {tags_url}")
-        for tag in payload[: _fetch_int(source.fetch, "max_tags", 15)]:
-            tag_name = str(tag.get("name", len(rows)))
-            rows.append(
-                RawRecord(
-                    raw_id=stable_id(source.id, "github_repo_tag", tag_name),
-                    source_id=source.id,
-                    fetched_at=fetched_at,
-                    source_url=tags_url,
-                    payload={"record_kind": "tag", "item": tag},
-                )
-            )
-    include_page = _fetch_bool(source.fetch, "include_page", False)
-    page_url = source.fetch.get("page_url")
-    if page_url or (include_page and repo):
-        url = page_url or f"https://github.com/{repo}"
-        html = client.get_text(url)
-        rows.append(
-            RawRecord(
-                raw_id=stable_id(source.id, "github_repo_page", url),
-                source_id=source.id,
-                fetched_at=fetched_at,
-                source_url=url,
-                payload={"record_kind": "page", "url": url, "html": html},
-            )
-        )
-    return rows
-
-
 def _fetch_rss_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
     url = source.fetch["url"]
     xml_text = client.get_text(url)
@@ -716,50 +559,6 @@ def _fetch_rss_records(source: SourceSpec, *, client: HttpClient, fetched_at: da
             )
         )
     return rows
-
-
-def _fetch_page_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
-    start_url = source.fetch["url"]
-    index_html = client.get_text(start_url)
-    index_root = parse_html(index_html)
-    links = extract_links(
-        index_root,
-        start_url,
-        selector=source.fetch.get("link_selector"),
-        limit=_fetch_int(source.fetch, "max_links", 8),
-    )
-    if _fetch_bool(source.fetch, "same_host_only", True):
-        links = filter_same_host(links, start_url)
-    if not links:
-        links = [start_url]
-    rows: list[RawRecord] = []
-    for url in links:
-        html = index_html if url == start_url else client.get_text(url)
-        article_root = parse_html(html)
-        outbound_links = extract_links(
-            article_root,
-            url,
-            limit=_fetch_int(source.fetch, "max_outbound_links", 20),
-        )
-        rows.append(
-            RawRecord(
-                raw_id=stable_id(source.id, source.kind, url),
-                source_id=source.id,
-                fetched_at=fetched_at,
-                source_url=start_url,
-                payload={
-                    "record_kind": "page",
-                    "url": url,
-                    "root_url": start_url,
-                    "html": html,
-                    "outbound_links": outbound_links,
-                },
-            )
-        )
-    deduped: dict[str, RawRecord] = {}
-    for row in rows:
-        deduped[str(row.payload["url"])] = row
-    return list(deduped.values())
 
 
 def _parse_feed_entries(xml_text: str) -> list[dict[str, Any]]:
@@ -819,12 +618,8 @@ def _atom_item_to_dict(entry: ElementTree.Element) -> dict[str, Any]:
 def _normalize_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
     if source.kind == "github_user":
         return _normalize_github_user_record(source, raw, window=window)
-    if source.kind == "github_repo":
-        return _normalize_github_repo_record(source, raw, window=window)
     if source.kind == "rss":
         return _normalize_rss_record(source, raw, window=window)
-    if source.kind in {"web_page", "conference_page"}:
-        return _normalize_page_record(source, raw, window=window)
     return None
 
 
@@ -893,71 +688,6 @@ def _normalize_github_user_record(source: SourceSpec, raw: RawRecord, *, window:
     )
 
 
-def _normalize_github_repo_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
-    payload = raw.payload
-    record_kind = payload.get("record_kind")
-    repo = source.fetch.get("repo", "")
-    if record_kind == "release":
-        release = payload["item"]
-        published_at = parse_datetime(release.get("published_at") or release.get("created_at")) or raw.fetched_at
-        if not _in_window(published_at, window):
-            return None
-        tag_name = str(release.get("tag_name") or release.get("name") or "release")
-        title = str(release.get("name") or f"{repo} released {tag_name}")
-        excerpt = collapse_ws(release.get("body") or f"{repo} published release {tag_name}.")
-        return _build_item(
-            source=source,
-            raw=raw,
-            kind="github-release",
-            external_id=str(release.get("id")) if release.get("id") else tag_name,
-            canonical_url=str(release.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag_name}"),
-            title=title,
-            author=release.get("author", {}).get("login"),
-            published_at=published_at,
-            excerpt=trim_text(excerpt, 280),
-            content_text=" ".join(part for part in (title, excerpt) if part),
-        )
-    if record_kind == "tag":
-        tag = payload["item"]
-        tag_name = str(tag.get("name") or "tag")
-        published_at = parse_datetime(tag.get("published_at")) or raw.fetched_at
-        if not _in_window(published_at, window):
-            return None
-        return _build_item(
-            source=source,
-            raw=raw,
-            kind="github-tag",
-            external_id=tag_name,
-            canonical_url=str(tag.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag_name}"),
-            title=f"{repo} tagged {tag_name}".strip(),
-            author=None,
-            published_at=published_at,
-            excerpt=f"{repo} created tag {tag_name}.",
-            content_text=f"{repo} tag {tag_name}".strip(),
-        )
-    if record_kind == "page":
-        root = parse_html(str(payload["html"]))
-        published_at = parse_datetime(extract_published_at(root)) or raw.fetched_at
-        if not _in_window(published_at, window):
-            return None
-        title = extract_title(root) or repo or source.title
-        body = extract_body_text(root, selector=source.fetch.get("body_selector"))
-        excerpt = trim_text(body or title, 280)
-        return _build_item(
-            source=source,
-            raw=raw,
-            kind="github-page",
-            external_id=str(payload["url"]),
-            canonical_url=str(payload["url"]),
-            title=title,
-            author=extract_author(root),
-            published_at=published_at,
-            excerpt=excerpt,
-            content_text=body or title,
-        )
-    return None
-
-
 def _normalize_rss_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
     item = raw.payload
     published_at = parse_datetime(item.get("published_at")) or raw.fetched_at
@@ -977,27 +707,6 @@ def _normalize_rss_record(source: SourceSpec, raw: RawRecord, *, window: TimeWin
         published_at=published_at,
         excerpt=trim_text(excerpt, 280),
         content_text=" ".join(bit for bit in (title, excerpt) if bit),
-    )
-
-
-def _normalize_page_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
-    root = parse_html(str(raw.payload["html"]))
-    published_at = parse_datetime(extract_published_at(root)) or raw.fetched_at
-    if not _in_window(published_at, window):
-        return None
-    title = extract_title(root) or str(raw.payload["url"])
-    body = extract_body_text(root, selector=source.fetch.get("body_selector"))
-    return _build_item(
-        source=source,
-        raw=raw,
-        kind=source.kind,
-        external_id=str(raw.payload["url"]),
-        canonical_url=str(raw.payload["url"]),
-        title=trim_text(title, 180),
-        author=extract_author(root),
-        published_at=published_at,
-        excerpt=trim_text(body or title, 280),
-        content_text=body or title,
     )
 
 
@@ -1042,18 +751,6 @@ def _fetch_int(fetch: dict[str, str], key: str, default: int) -> int:
     if parsed <= 0:
         raise ValidationError(f"Fetch key '{key}' must be positive")
     return parsed
-
-
-def _fetch_bool(fetch: dict[str, str], key: str, default: bool) -> bool:
-    value = fetch.get(key)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in {"yes", "true", "1"}:
-        return True
-    if normalized in {"no", "false", "0"}:
-        return False
-    raise ValidationError(f"Fetch key '{key}' must be yes/no")
 
 
 def _item_quality(item: CollectedItem) -> tuple[int, int, float]:

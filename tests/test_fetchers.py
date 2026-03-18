@@ -23,7 +23,6 @@ class FetcherTest(unittest.TestCase):
             title="Fixture GitHub User",
             kind="github_user",
             enabled=True,
-            topics=["browser-exploitation"],
             fetch={"handle": "sample-researcher", "events_url": self._file_url("github_user_events.json")},
             notes="fixture",
         )
@@ -33,27 +32,13 @@ class FetcherTest(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertEqual({item.kind for item in items}, {"releaseevent", "pushevent"})
 
-    def test_rss_and_web_page_normalization(self) -> None:
+    def test_rss_normalization(self) -> None:
         rss_source = SourceSpec(
             id="fixture-rss",
             title="Fixture RSS",
             kind="rss",
             enabled=True,
-            topics=["cloud-detection"],
             fetch={"url": self._file_url("rss.xml")},
-            notes="fixture",
-        )
-        web_source = SourceSpec(
-            id="fixture-web",
-            title="Fixture Web",
-            kind="web_page",
-            enabled=True,
-            topics=["browser-exploitation"],
-            fetch={
-                "url": self._file_url("web_index.html"),
-                "link_selector": ".post-list a",
-                "body_selector": "article",
-            },
             notes="fixture",
         )
         rss_items = normalize_raw_records(
@@ -61,14 +46,8 @@ class FetcherTest(unittest.TestCase):
             fetch_raw_records(rss_source, client=self.client, fetched_at=self.fetched_at),
             window=self.window,
         )
-        web_raw = fetch_raw_records(web_source, client=self.client, fetched_at=self.fetched_at)
-        web_items = normalize_raw_records(web_source, web_raw, window=self.window)
         self.assertEqual(len(rss_items), 1)
         self.assertEqual(rss_items[0].canonical_url, "https://example.com/blog/cloud-detection-rule-update")
-        self.assertEqual(len(web_items), 1)
-        self.assertEqual(web_items[0].title, "Kernel Exploit Internals")
-        self.assertIn("outbound_links", web_raw[0].payload)
-        self.assertIn("https://github.com/research-lab/browser-poc", web_raw[0].payload["outbound_links"])
 
     def _file_url(self, name: str) -> str:
         return (self.fixtures / name).resolve().as_uri()

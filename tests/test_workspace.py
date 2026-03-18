@@ -15,8 +15,7 @@ class WorkspaceTest(unittest.TestCase):
         payload = validate_workspace(self.repo_root)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["sources"], 5)
-        self.assertEqual(payload["enabled_sources"], 0)
-        self.assertEqual(payload["topics"], 2)
+        self.assertEqual(payload["enabled_sources"], 1)
 
     def test_workspace_rejects_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -34,7 +33,7 @@ class WorkspaceTest(unittest.TestCase):
             root = Path(tmpdir)
             self._write_valid_workspace(root)
             (root / "planning" / "sources.toml").write_text(
-                '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nenabled = true\ntopics = ["demo-topic"]\nnotes = "No kind."\nfetch.url = "https://example.com/feed.xml"\n',
+                '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nenabled = true\nnotes = "No kind."\nfetch.url = "https://example.com/feed.xml"\n',
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValidationError, "missing 'kind'"):
@@ -46,12 +45,8 @@ class WorkspaceTest(unittest.TestCase):
             "# Report Style\n\n## Audience\n\nAnalyst.\n\n## Language\n\nEnglish.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nKeep it short.\n",
             encoding="utf-8",
         )
-        (root / "planning" / "topics.md").write_text(
-            "# Topics\n\n## Demo Topic\n\n### Care About\n\nSignals.\n\n### Usually Ignore\n\nNoise.\n\n### Reporting Angle\n\nExplain why it matters.\n",
-            encoding="utf-8",
-        )
         (root / "planning" / "sources.toml").write_text(
-            '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nkind = "rss"\nenabled = true\ntopics = ["demo-topic"]\nnotes = "Example source."\nfetch.url = "https://example.com/feed.xml"\n',
+            '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nkind = "rss"\nenabled = true\nnotes = "Example source."\nfetch.url = "https://example.com/feed.xml"\n',
             encoding="utf-8",
         )
 
