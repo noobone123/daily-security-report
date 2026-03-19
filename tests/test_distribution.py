@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from skill_lib import HttpClient, SourceSpec, TimeWindow, bootstrap_planning, fetch_raw_records, normalize_raw_records
+from skill_lib import HttpClient, SourceSpec, TimeWindow, bootstrap_planning, fetch_raw_records, normalize_raw_records, write_workspace_config
 
 
 class DistributionTest(unittest.TestCase):
@@ -25,32 +26,82 @@ class DistributionTest(unittest.TestCase):
         for agent_name in ("source-resolver", "web-source-collector", "item-filter", "report-writer"):
             self.assertTrue((self.repo_root / "agents" / f"{agent_name}.md").exists())
 
-    def test_install_script_project_mode_creates_symlinks(self) -> None:
+    def test_claude_install_script_creates_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            target = Path(tmpdir) / "project"
-            target.mkdir()
+            claude_dir = Path(tmpdir) / ".claude"
             result = subprocess.run(
-                ["bash", str(self.repo_root / "scripts" / "install.sh"), "--mode", "project", "--target", str(target)],
+                ["bash", str(self.repo_root / "scripts" / "claude_install.sh"), "--claude-dir", str(claude_dir)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
-            skill_link = target / ".claude" / "skills" / "daily-security-digest"
+            skill_link = claude_dir / "skills" / "daily-security-digest"
             self.assertTrue(skill_link.is_symlink())
             self.assertEqual(skill_link.resolve(), (self.repo_root / "skills" / "daily-security-digest").resolve())
+            config_path = self.skill_dir / "config.toml"
+            self.assertTrue(config_path.exists())
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn(str(self.repo_root.resolve()), config_text)
 
             for agent_name in ("source-resolver", "web-source-collector", "item-filter", "report-writer"):
-                agent_link = target / ".claude" / "agents" / f"{agent_name}.md"
+                agent_link = claude_dir / "agents" / f"{agent_name}.md"
                 self.assertTrue(agent_link.is_symlink())
                 self.assertEqual(agent_link.resolve(), (self.repo_root / "agents" / f"{agent_name}.md").resolve())
 
     def test_bootstrap_planning_uses_skill_templates_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            payload = bootstrap_planning(Path(tmpdir), self.templates_dir)
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            skill_dir = Path(tmpdir) / "skill"
+            shutil.copytree(self.templates_dir, skill_dir / "templates")
+            write_workspace_config(skill_dir / "config.toml", workspace)
+            payload = bootstrap_planning(skill_dir / "templates")
             created = {Path(path).name for path in payload["created"]}
             self.assertEqual(created, {"sources.toml", "topics.md", "report-style.md"})
+
+    def test_bootstrap_cli_reports_workspace_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "workspace"
+            repo_root.mkdir()
+            skill_dir = Path(tmpdir) / "skill"
+            shutil.copytree(self.skill_dir / "scripts", skill_dir / "scripts")
+            shutil.copytree(self.templates_dir, skill_dir / "templates")
+            write_workspace_config(skill_dir / "config.toml", repo_root)
+            script_path = skill_dir / "scripts" / "bootstrap_planning.py"
+
+            result = subprocess.run(
+                ["python3", str(script_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=tmpdir,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["workspace"], str(repo_root.resolve()))
+            self.assertEqual(payload["workspace_config_path"], str((skill_dir / "config.toml").resolve()))
+            self.assertEqual(payload["planning_dir"], str((repo_root / "planning").resolve()))
+            self.assertEqual(payload["runs_dir"], str((repo_root / "data" / "runs").resolve()))
+
+    def test_claude_install_script_config_only_writes_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / ".claude"
+            result = subprocess.run(
+                ["bash", str(self.repo_root / "scripts" / "claude_install.sh"), "--claude-dir", str(claude_dir), "--config-only"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertFalse((claude_dir / "skills" / "daily-security-digest").exists())
+            self.assertFalse((claude_dir / "agents" / "source-resolver.md").exists())
+            config_path = self.skill_dir / "config.toml"
+            self.assertTrue(config_path.exists())
+            self.assertIn(str(self.repo_root.resolve()), config_path.read_text(encoding="utf-8"))
 
     def test_repo_has_single_canonical_agent_set(self) -> None:
         self.assertFalse((self.repo_root / ".claude" / "agents" / "source-resolver.md").exists())

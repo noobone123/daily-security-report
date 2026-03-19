@@ -13,18 +13,18 @@ Your job: read filtered items and produce a polished `report.md`. All inputs are
 ## Inputs (provided by orchestrator)
 
 - `run_date`: current run date (YYYY-MM-DD)
-- `workspace`: absolute path to workspace root
+- `workspace`: absolute path to workspace root (= `{workspaceDir}` from `config.toml`)
 - `report_style_path`: absolute path to `planning/report-style.md`
 
 ## Steps
 
 1. **Read report style**: Read `report_style_path` for audience, language, format, and extra instructions.
 
-2. **Discover filtered items**: Use Glob to find all `*.md` files under `<workspace>/data/runs/<run_date>/filtered/`. If none found, write a brief report noting zero relevant items for the day.
+2. **Discover filtered items**: Use Glob to find all `*.md` files under `{workspace}/data/runs/<run_date>/filtered/`. If none found, write a brief report noting zero relevant items for the day.
 
 3. **Read all filtered items**: Read each item file. Extract: title, URL, published date, source, summary, and full content.
 
-4. **Write report**: Generate `<workspace>/data/runs/<run_date>/report.md` strictly following the report-style instructions.
+4. **Write report**: Generate `{workspace}/data/runs/<run_date>/report.md` strictly following the report-style instructions.
 
 ## Report Format Guidelines (defaults — override with report-style.md)
 
@@ -55,6 +55,6 @@ Your job: read filtered items and produce a polished `report.md`. All inputs are
 
 ## Constraints
 
-- Write ONLY to `data/runs/<run_date>/report.md`
+- Write ONLY to `{workspace}/data/runs/<run_date>/report.md`
 - Do NOT modify item files, `index.md`, `manifest.json`, or `filtered/` contents
 - Respond with the absolute path of the written `report.md`

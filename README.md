@@ -7,7 +7,7 @@ Daily Security Digest packages a Claude Code workflow for collecting GitHub feed
 There are two supported ways to use this project:
 
 1. Plugin distribution through Claude Code
-2. `scripts/install.sh` as a fallback when plugin loading is not available
+2. `scripts/claude_install.sh` as a fallback when plugin loading is not available
 
 Do not use both for the same workspace, or Claude will see duplicate skills and subagents.
 
@@ -34,11 +34,11 @@ daily-security-report/
 │           ├── topics.md.example
 │           └── report-style.md.example
 ├── scripts/
-│   └── install.sh
+│   └── claude_install.sh
 └── tests/
 ```
 
-`planning/` and `data/runs/` are runtime workspace state. They are created in the target workspace when the skill runs.
+`planning/` and `data/runs/` are runtime workspace state. They are created in the fixed repo workspace declared by `skills/daily-security-digest/config.toml`, not in the installed skill directory.
 
 ## Plugin Install
 
@@ -63,26 +63,38 @@ When you later publish this repository to a plugin marketplace, the same layout 
 If the target environment cannot use plugins directly, install the same canonical files into Claude's standalone directories:
 
 ```bash
-./scripts/install.sh --mode project --target /path/to/target-project
+./scripts/claude_install.sh
 ```
 
-That installs:
+This also writes the local workspace config file:
 
 ```text
-/path/to/target-project/.claude/skills/daily-security-digest
-/path/to/target-project/.claude/agents/source-resolver.md
-/path/to/target-project/.claude/agents/web-source-collector.md
-/path/to/target-project/.claude/agents/item-filter.md
-/path/to/target-project/.claude/agents/report-writer.md
+skills/daily-security-digest/config.toml
 ```
 
-For a global fallback install:
+Per the official docs, personal skills live at `~/.claude/skills/<skill-name>/SKILL.md` and personal subagents live at `~/.claude/agents/`. This fallback installs:
 
-```bash
-./scripts/install.sh --mode global --target "$HOME"
+```text
+/home/<user>/.claude/skills/daily-security-digest
+/home/<user>/.claude/agents/source-resolver.md
+/home/<user>/.claude/agents/web-source-collector.md
+/home/<user>/.claude/agents/item-filter.md
+/home/<user>/.claude/agents/report-writer.md
 ```
 
 The fallback installer uses symlinks by default so the repository remains the only maintained source. If symlink creation is unavailable in the target environment, rerun with `--copy` as a last resort.
+
+To install into another Claude directory for testing:
+
+```bash
+./scripts/claude_install.sh --claude-dir /tmp/my-claude
+```
+
+For plugin-only usage, initialize only the workspace config:
+
+```bash
+./scripts/claude_install.sh --config-only
+```
 
 After a fallback install, the skill is available as:
 
@@ -109,6 +121,33 @@ On first run, the skill creates these workspace files if they do not already exi
 - `planning/sources.toml`
 - `planning/topics.md`
 - `planning/report-style.md`
+
+### Workspace Configuration
+
+The runtime workspace is fixed by this local config file:
+
+```text
+skills/daily-security-digest/config.toml
+```
+
+Example:
+
+```toml
+workspace_root = "/absolute/path/to/daily-security-report"
+```
+
+This means:
+
+- the current repo is the only supported workspace
+- skill code may load from `~/.claude/skills/...` or a plugin directory, but runtime data is always written under the configured repo root
+- plugin and fallback install share the same workspace config source
+
+The scripts return these fields so the caller can tell the user exactly where data will go:
+
+- `workspace`
+- `workspace_config_path`
+- `planning_dir`
+- `runs_dir`
 
 ## Configuration
 
@@ -160,7 +199,6 @@ fetch.url = "https://example.com/feed.xml"
 
 ```bash
 python3 skills/daily-security-digest/scripts/collect_materials.py \
-  --workspace . \
   --timezone Asia/Shanghai
 ```
 

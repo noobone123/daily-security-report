@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 from skill_lib import (
     CollectedItem,
     ValidationError,
+    config_path_for_templates,
     build_day_window,
     build_time_window,
     dedupe_items,
@@ -16,6 +19,7 @@ from skill_lib import (
     load_seen_urls,
     run_collection,
     sort_items,
+    write_workspace_config,
     write_json,
 )
 
@@ -24,12 +28,15 @@ class CollectionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[1]
         self.fixtures = self.repo_root / "tests" / "fixtures"
+        self.skill_src = self.repo_root / "skills" / "daily-security-digest"
 
     def test_collect_materials_writes_index_items_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             self._write_fixture_workspace(workspace)
-            manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
             run_dir = workspace / "data" / "runs" / "2026-03-18"
             index_path = run_dir / "index.md"
             manifest_path = run_dir / "manifest.json"
@@ -49,12 +56,18 @@ class CollectionTest(unittest.TestCase):
             item_text = first_item.read_text(encoding="utf-8")
             self.assertIn("## Summary", item_text)
             self.assertIn("## Content", item_text)
+            self.assertEqual(manifest["workspace"], str(workspace.resolve()))
+            self.assertEqual(manifest["workspace_config_path"], str(config_path_for_templates(templates_dir).resolve()))
+            self.assertEqual(manifest["planning_dir"], str((workspace / "planning").resolve()))
+            self.assertEqual(manifest["runs_dir"], str((workspace / "data" / "runs").resolve()))
 
     def test_collect_materials_records_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             self._write_fixture_workspace(workspace, broken_rss=True)
-            manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
             index_text = (workspace / "data" / "runs" / "2026-03-18" / "index.md").read_text(encoding="utf-8")
             self.assertEqual(manifest["failure_count"], 1)
             self.assertIn("fixture-rss", index_text)
@@ -63,10 +76,65 @@ class CollectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             self._write_fixture_workspace(workspace)
-            manifest = run_collection(workspace, date_slug="2026-03-20", timezone="Asia/Shanghai", days=1)
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            manifest = run_collection(templates_dir, date_slug="2026-03-20", timezone="Asia/Shanghai", days=1)
             index_text = (workspace / "data" / "runs" / "2026-03-20" / "index.md").read_text(encoding="utf-8")
             self.assertEqual(manifest["item_count"], 0)
             self.assertIn("No items collected for this day.", index_text)
+
+    def test_run_collection_uses_workspace_from_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "repo"
+            self._write_fixture_workspace(repo_root)
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), repo_root)
+
+            manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
+            self.assertEqual(manifest["workspace"], str(repo_root.resolve()))
+            self.assertEqual(manifest["workspace_config_path"], str(config_path_for_templates(templates_dir).resolve()))
+            self.assertEqual(manifest["runs_dir"], str((repo_root / "data" / "runs").resolve()))
+            self.assertTrue((repo_root / "data" / "runs" / "2026-03-18" / "manifest.json").exists())
+
+    def test_run_collection_rejects_missing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            with self.assertRaisesRegex(ValidationError, "Missing workspace config"):
+                run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
+
+    def test_collect_materials_cli_reports_workspace_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            workspace.mkdir()
+            self._write_fixture_workspace(workspace)
+            skill_dir = Path(tmpdir) / "skills" / "daily-security-digest"
+            shutil.copytree(self.skill_src / "scripts", skill_dir / "scripts")
+            shutil.copytree(self.skill_src / "templates", skill_dir / "templates")
+            write_workspace_config(skill_dir / "config.toml", workspace)
+            script_path = skill_dir / "scripts" / "collect_materials.py"
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(script_path),
+                    "--date",
+                    "2026-03-18",
+                    "--timezone",
+                    "Asia/Shanghai",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=self.repo_root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["workspace"], str(workspace.resolve()))
+            self.assertEqual(payload["workspace_config_path"], str((skill_dir / "config.toml").resolve()))
+            self.assertEqual(payload["planning_dir"], str((workspace / "planning").resolve()))
+            self.assertEqual(payload["runs_dir"], str((workspace / "data" / "runs").resolve()))
+            self.assertEqual(payload["manifest"]["workspace"], str(workspace.resolve()))
 
     def test_dedupe_prefers_richer_item_and_sorting_is_newest_first(self) -> None:
         older_rich = self._make_item(
@@ -147,6 +215,12 @@ class CollectionTest(unittest.TestCase):
         )
         (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
 
+    def _make_templates_dir(self, root: Path) -> Path:
+        templates_dir = root / "skill" / "templates"
+        templates_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.skill_src / "templates", templates_dir)
+        return templates_dir
+
     def _uri(self, name: str) -> str:
         return (self.fixtures / name).resolve().as_uri()
 
@@ -181,12 +255,15 @@ class ManifestFieldsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[1]
         self.fixtures = self.repo_root / "tests" / "fixtures"
+        self.skill_src = self.repo_root / "skills" / "daily-security-digest"
 
     def test_manifest_has_warnings_and_collected_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             self._write_fixture_workspace(workspace)
-            manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
             self.assertIn("warnings", manifest)
             self.assertIsInstance(manifest["warnings"], list)
             self.assertIn("collected_urls", manifest)
@@ -200,7 +277,9 @@ class ManifestFieldsTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmpdir:
                 workspace = Path(tmpdir)
                 self._write_fixture_workspace(workspace)
-                manifest = run_collection(workspace, date_slug="2026-03-18", timezone="Asia/Shanghai")
+                templates_dir = self._make_templates_dir(Path(tmpdir))
+                write_workspace_config(config_path_for_templates(templates_dir), workspace)
+                manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
                 token_warnings = [w for w in manifest["warnings"] if "GITHUB_TOKEN" in w]
                 self.assertEqual(len(token_warnings), 1)
         finally:
@@ -223,6 +302,12 @@ class ManifestFieldsTest(unittest.TestCase):
             'fetch.events_url = "' + (self.fixtures / "github_user_events.json").resolve().as_uri() + '"\n'
         )
         (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
+
+    def _make_templates_dir(self, root: Path) -> Path:
+        templates_dir = root / "skill" / "templates"
+        templates_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.skill_src / "templates", templates_dir)
+        return templates_dir
 
 
 class SeenUrlsTest(unittest.TestCase):

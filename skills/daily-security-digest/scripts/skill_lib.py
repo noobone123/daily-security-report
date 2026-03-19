@@ -57,6 +57,7 @@ PLANNING_TEMPLATE_MAP = {
     "topics.md": "topics.md.example",
     "report-style.md": "report-style.md.example",
 }
+CONFIG_FILENAME = "config.toml"
 
 
 @dataclass(slots=True)
@@ -93,6 +94,28 @@ class WorkspaceSpec:
 class TimeWindow:
     start: datetime
     end: datetime
+
+
+@dataclass(slots=True)
+class WorkspacePaths:
+    root: Path
+    config_path: Path
+
+    @property
+    def planning_dir(self) -> Path:
+        return self.root / "planning"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.root / "data" / "runs"
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "workspace": str(self.root),
+            "workspace_config_path": str(self.config_path),
+            "planning_dir": str(self.planning_dir),
+            "runs_dir": str(self.runs_dir),
+        }
 
 
 @dataclass(slots=True)
@@ -162,9 +185,49 @@ def validate_workspace(workspace_root: Path) -> dict[str, Any]:
     }
 
 
-def bootstrap_planning(workspace_root: Path, templates_dir: Path) -> dict[str, Any]:
+def config_path_for_templates(templates_dir: Path) -> Path:
+    return templates_dir.parent / CONFIG_FILENAME
+
+
+def write_workspace_config(config_path: Path, workspace_root: Path) -> dict[str, str]:
     root = workspace_root.resolve()
-    planning_dir = root / "planning"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        f'workspace_root = "{_escape_toml(str(root))}"\n',
+        encoding="utf-8",
+    )
+    return {
+        "workspace": str(root),
+        "workspace_config_path": str(config_path.resolve()),
+    }
+
+
+def read_workspace_config(config_path: Path) -> WorkspacePaths:
+    resolved_config = config_path.resolve()
+    if not resolved_config.is_file():
+        raise ValidationError(
+            f"Missing workspace config: {resolved_config}. Run ./scripts/claude_install.sh or create the config file described in README."
+        )
+    with resolved_config.open("rb") as f:
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValidationError(f"{resolved_config}: TOML parse error: {exc}") from exc
+    raw_root = str(data.get("workspace_root", "")).strip()
+    if not raw_root:
+        raise ValidationError(f"{resolved_config}: workspace_root is required")
+    root = Path(raw_root)
+    if not root.is_absolute():
+        raise ValidationError(f"{resolved_config}: workspace_root must be an absolute path")
+    resolved_root = root.resolve()
+    if not resolved_root.exists() or not resolved_root.is_dir():
+        raise ValidationError(f"{resolved_config}: workspace_root does not exist: {resolved_root}")
+    return WorkspacePaths(root=resolved_root, config_path=resolved_config)
+
+
+def bootstrap_planning(templates_dir: Path) -> dict[str, Any]:
+    workspace = read_workspace_config(config_path_for_templates(templates_dir))
+    planning_dir = workspace.planning_dir
     planning_dir.mkdir(parents=True, exist_ok=True)
 
     created: list[str] = []
@@ -181,16 +244,15 @@ def bootstrap_planning(workspace_root: Path, templates_dir: Path) -> dict[str, A
         created.append(str(target_path))
 
     return {
-        "workspace": str(root),
-        "planning_dir": str(planning_dir),
+        **workspace.to_payload(),
         "created": created,
         "existing": existing,
     }
 
 
 def load_workspace(workspace_root: Path) -> WorkspaceSpec:
-    root = workspace_root.resolve()
-    planning_dir = root / "planning"
+    paths = WorkspacePaths(root=workspace_root.resolve(), config_path=Path(""))
+    planning_dir = paths.planning_dir
     sources_path = planning_dir / "sources.toml"
     report_style_path = planning_dir / "report-style.md"
 
@@ -199,7 +261,7 @@ def load_workspace(workspace_root: Path) -> WorkspaceSpec:
 
     sources = load_all_sources(sources_path) if sources_path.is_file() else []
     report_style = load_report_style(report_style_path)
-    return WorkspaceSpec(root=root, sources=sources, report_style=report_style)
+    return WorkspaceSpec(root=paths.root, sources=sources, report_style=report_style)
 
 
 def load_all_sources(path: Path) -> list[SourceSpec]:
@@ -262,8 +324,9 @@ def load_report_style(path: Path) -> ReportStyle:
     )
 
 
-def run_collection(workspace_root: Path, *, date_slug: str, timezone: str, days: int | None = None) -> dict[str, Any]:
-    workspace = load_workspace(workspace_root)
+def run_collection(templates_dir: Path, *, date_slug: str, timezone: str, days: int | None = None) -> dict[str, Any]:
+    paths = read_workspace_config(config_path_for_templates(templates_dir))
+    workspace = load_workspace(paths.root)
     # Build time window: explicit --days > auto-continue from last run > 3-day default
     if days is not None:
         window = build_time_window(date_slug, timezone, days=days)
@@ -320,6 +383,7 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str, days:
         encoding="utf-8",
     )
     manifest = {
+        **paths.to_payload(),
         "date": date_slug,
         "timezone": timezone,
         "window_start": window.start.isoformat(),

@@ -2,7 +2,7 @@
 name: daily-security-digest
 description: Fetch security sources into local Markdown materials and let the calling agent filter and write a digest from files.
 disable-model-invocation: true
-allowed-tools: WebFetch, Agent, Read, Write, Glob, Grep, Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/bootstrap_planning.py *), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/collect_materials.py *)
+allowed-tools: WebFetch, Agent, Read, Write, Glob, Grep, Bash
 argument-hint: "[date] [--days N]"
 ---
 
@@ -13,22 +13,37 @@ Use this skill as a thin file-fetching layer for another agent.
 The skill script handles API and RSS sources (structured data, deterministic, zero token cost).
 Web sources are left to the calling agent via WebFetch (handles JS-rendered pages, complex layouts).
 
+## Path Conventions
+
+Two placeholders are used throughout this document:
+
+- `{skillDir}` — the directory containing this `SKILL.md` and the bundled scripts (equals `${CLAUDE_SKILL_DIR}` in Claude Code). Contains `scripts/`, `templates/`, `config.toml`.
+- `{workspaceDir}` — the workspace root read from `{skillDir}/config.toml` → `workspace_root`. Contains `planning/`, `data/runs/`, and the `agents/` subagent definitions.
+
+All data path references below are relative to `{workspaceDir}`.
+
 ## Workflow
 
 ### Step -1: Bootstrap planning files (script)
 
-Before checking the workspace state, make sure the planning files exist.
+Before checking the workspace state, make sure the local workspace config exists
+and then make sure the planning files exist.
 
 Run:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/bootstrap_planning.py \
-  --workspace .
+python3 ${CLAUDE_SKILL_DIR}/scripts/bootstrap_planning.py
 ```
 
-This creates `planning/sources.toml`, `planning/topics.md`, and
-`planning/report-style.md` from the skill's bundled templates, without
+This creates `{workspaceDir}/planning/sources.toml`, `{workspaceDir}/planning/topics.md`, and
+`{workspaceDir}/planning/report-style.md` from the skill's bundled templates, without
 overwriting any file that already exists.
+
+After running the script, read its JSON output and tell the user:
+- the fixed workspace root (`workspace`)
+- the workspace config file path (`workspace_config_path`)
+- the planning directory (`planning_dir`)
+- the run output directory (`runs_dir`)
 
 ### Step 0: Source & Topic Onboarding (agent, interactive — BLOCKING GATE)
 
@@ -45,10 +60,10 @@ overwriting any file that already exists.
 > - NEVER treat example file comments as valid content
 
 **First-time detection** — this is first-time setup if ANY of these are true:
-1. `planning/sources.toml` has zero `[[sources]]` entries, or all have `enabled = false`
-2. `planning/topics.md` has no `##` headings (only comments)
-3. `planning/topics.md` has a `## All` catch-all heading
-4. Any topic in `planning/topics.md` lacks `### Care About` or `### Usually Ignore`
+1. `{workspaceDir}/planning/sources.toml` has zero `[[sources]]` entries, or all have `enabled = false`
+2. `{workspaceDir}/planning/topics.md` has no `##` headings (only comments)
+3. `{workspaceDir}/planning/topics.md` has a `## All` catch-all heading
+4. Any topic in `{workspaceDir}/planning/topics.md` lacks `### Care About` or `### Usually Ignore`
 
 If first-time setup is detected, run all three phases below.
 
@@ -74,9 +89,9 @@ When the user replies with URLs or usernames:
 2. Collect all results, present the resolved source list to the user.
 3. Ask: "Does this look right? Anything to add, remove, or change?"
 
-**STOP HERE.** Do NOT write to `planning/sources.toml` yet. Wait for the user to confirm.
+**STOP HERE.** Do NOT write to `{workspaceDir}/planning/sources.toml` yet. Wait for the user to confirm.
 
-When the user confirms → write all sources to `planning/sources.toml`.
+When the user confirms → write all sources to `{workspaceDir}/planning/sources.toml`.
 
 ---
 
@@ -102,9 +117,9 @@ When the user replies with topics:
 ---
 
 **Gate check before Step 1** — verify ALL of the following before proceeding:
-- `planning/sources.toml` has at least one `[[sources]]` entry with `enabled = true`
+- `{workspaceDir}/planning/sources.toml` has at least one `[[sources]]` entry with `enabled = true`
 - Every source URL traces back to a user message in this conversation
-- `planning/topics.md` has at least one `## Topic` heading (not `## All`)
+- `{workspaceDir}/planning/topics.md` has at least one `## Topic` heading (not `## All`)
 - Every topic has non-empty `### Care About` and `### Usually Ignore`
 
 If any check fails, re-run the relevant phase above.
@@ -113,7 +128,6 @@ If any check fails, re-run the relevant phase above.
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/collect_materials.py \
-  --workspace . \
   --timezone Asia/Shanghai
 ```
 
@@ -123,7 +137,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/collect_materials.py \
 If no previous runs exist, it looks back 3 days. If the user asks for a specific range
 (e.g., "last 7 days of news"), pass `--days 7` to override.
 
-Outputs under `data/runs/YYYY-MM-DD/`:
+Outputs under `{workspaceDir}/data/runs/YYYY-MM-DD/`:
 - `manifest.json` — run metadata, collected item list, and `agent_sources` to fetch
 - `index.md` — run overview with basic summaries
 - `items/*.md` — one file per collected item
@@ -132,9 +146,14 @@ Outputs under `data/runs/YYYY-MM-DD/`:
 (e.g., "GITHUB_TOKEN not set, rate limit may apply"). Also check `failures` for any
 sources that could not be collected, and report them to the user.
 
+Before moving on to Step 2, repeat the resolved write location to the user in one line:
+- workspace root
+- planning directory
+- run output directory
+
 ### Step 2: Collect web sources (parallel subagents)
 
-Read `data/runs/YYYY-MM-DD/manifest.json` → `agent_sources` array.
+Read `{workspaceDir}/data/runs/YYYY-MM-DD/manifest.json` → `agent_sources` array.
 If there are no agent_sources, skip to Step 3.
 
 **Launch one `web-source-collector` subagent per web source** using the Agent tool.
@@ -156,8 +175,8 @@ with the remaining items.
 
 ### Step 3: Summarize and filter by topic (parallel subagents)
 
-Read `planning/topics.md` for topic guidance.
-List all `data/runs/YYYY-MM-DD/items/*.md` files.
+Read `{workspaceDir}/planning/topics.md` for topic guidance.
+List all `{workspaceDir}/data/runs/YYYY-MM-DD/items/*.md` files.
 
 **Batch items into groups of approximately 10.** For each batch, launch an **`item-filter`**
 subagent using the Agent tool. Issue all Agent tool calls in a single message so they run
@@ -170,9 +189,9 @@ item_paths, topics_path, workspace, run_date
 It writes summaries into item files and returns a JSON array of `{path, relevant, topics, title, url}`.
 
 After all subagents complete, the main agent:
-1. Rewrites `data/runs/YYYY-MM-DD/index.md` with the LLM summaries (replaces the
+1. Rewrites `{workspaceDir}/data/runs/YYYY-MM-DD/index.md` with the LLM summaries (replaces the
    script-generated basic summaries)
-2. Copies relevant item files to `data/runs/YYYY-MM-DD/filtered/`
+2. Copies relevant item files to `{workspaceDir}/data/runs/YYYY-MM-DD/filtered/`
 3. If zero items are relevant, inform the user and ask whether to relax the filter
    or skip the report
 
@@ -180,15 +199,15 @@ After all subagents complete, the main agent:
 
 Launch the **`report-writer`** subagent with:
 ```
-run_date, workspace, report_style_path=planning/report-style.md
+run_date, workspace, report_style_path={workspaceDir}/planning/report-style.md
 ```
-It reads all `filtered/*.md` files and writes `data/runs/<run_date>/report.md`.
+It reads all `filtered/*.md` files and writes `{workspaceDir}/data/runs/<run_date>/report.md`.
 
 ### Step 5: Deliver report to user (agent)
 
 After writing `report.md`, send the user a message containing:
 1. A concise summary of the report highlights (key findings, number of items, notable sources)
-2. The full path to the report file: `data/runs/YYYY-MM-DD/report.md`
+2. The full path to the report file: `{workspaceDir}/data/runs/YYYY-MM-DD/report.md`
 
 ## Item File Format
 
@@ -217,9 +236,9 @@ Every item file (whether written by the script or the agent) uses this format:
 
 The user-edited planning files live in:
 
-- `planning/sources.toml` — source definitions (one `[[sources]]` block per source)
-- `planning/topics.md` — topic guidance for the calling agent (one `## Heading` per topic)
-- `planning/report-style.md` — report style preferences for the calling agent
+- `{workspaceDir}/planning/sources.toml` — source definitions (one `[[sources]]` block per source)
+- `{workspaceDir}/planning/topics.md` — topic guidance for the calling agent (one `## Heading` per topic)
+- `{workspaceDir}/planning/report-style.md` — report style preferences for the calling agent
 
 The collector reads only `sources.toml`; `topics.md` and `report-style.md` are for the calling agent.
 
@@ -234,7 +253,7 @@ The collector reads only `sources.toml`; `topics.md` and `report-style.md` are f
 ## Source Management (user-initiated only)
 
 The user can ask to add, remove, enable, or disable sources at any time.
-Read `planning/sources.toml`, make the requested change, and write it back.
+Read `{workspaceDir}/planning/sources.toml`, make the requested change, and write it back.
 
 **This applies ONLY when the user explicitly requests a specific change**
 (e.g., "add this URL", "remove source X", "disable the-record"). It MUST NOT
@@ -243,5 +262,5 @@ be used to bypass Step 0 onboarding or to auto-populate sources.
 ## Notes
 
 - The skill bundles its own test suite under `tests/` for development. The calling agent does **not** need to run tests during normal use.
-- The bundled templates live under `${CLAUDE_SKILL_DIR}/templates/` so the skill remains self-contained in both plugin and standalone installs.
+- The bundled templates live under `{skillDir}/templates/` so the skill remains self-contained in both plugin and standalone installs.
 - **Optional optimization**: After Step 1, you may launch Step 2 subagents (web fetch) and Step 3 subagents (for script-collected items only) in the same message. When Step 2 completes, launch additional Step 3 subagents for web-collected items. This overlaps fetching with summarization but requires careful result merging.

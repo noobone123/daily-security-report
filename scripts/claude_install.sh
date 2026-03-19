@@ -3,29 +3,36 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install.sh --mode project|global [--target PATH] [--copy]
+Usage: scripts/claude_install.sh [--claude-dir PATH] [--copy] [--config-only]
 
-Installs the canonical skill and subagent definitions from this repository into
-Claude's standalone .claude directories.
+Install the canonical skill and subagent definitions from this repository into
+Claude Code's personal standalone directories.
+
+By default this writes into:
+  ~/.claude/skills/daily-security-digest
+  ~/.claude/agents/*.md
+
+It also writes:
+  skills/daily-security-digest/config.toml
 EOF
 }
 
-MODE=""
-TARGET=""
+CLAUDE_DIR="${HOME}/.claude"
 COPY_MODE=0
+CONFIG_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --mode)
-      MODE="${2:-}"
-      shift 2
-      ;;
-    --target)
-      TARGET="${2:-}"
+    --claude-dir)
+      CLAUDE_DIR="${2:-}"
       shift 2
       ;;
     --copy)
       COPY_MODE=1
+      shift
+      ;;
+    --config-only)
+      CONFIG_ONLY=1
       shift
       ;;
     -h|--help)
@@ -40,37 +47,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${MODE}" ]]; then
-  echo "--mode is required" >&2
-  usage >&2
-  exit 1
-fi
-
-case "${MODE}" in
-  project)
-    if [[ -z "${TARGET}" ]]; then
-      TARGET="."
-    fi
-    ;;
-  global)
-    if [[ -z "${TARGET}" ]]; then
-      TARGET="${HOME}"
-    fi
-    ;;
-  *)
-    echo "Unsupported mode: ${MODE}" >&2
-    exit 1
-    ;;
-esac
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TARGET_ROOT="$(cd "${TARGET}" && pwd)"
-CLAUDE_DIR="${TARGET_ROOT}/.claude"
-SKILLS_DIR="${CLAUDE_DIR}/skills"
-AGENTS_DIR="${CLAUDE_DIR}/agents"
-
-mkdir -p "${SKILLS_DIR}" "${AGENTS_DIR}"
+CONFIG_PATH="${REPO_ROOT}/skills/daily-security-digest/config.toml"
+mkdir -p "$(dirname "${CONFIG_PATH}")"
 
 resolve_path() {
   local path="$1"
@@ -123,6 +103,25 @@ install_item() {
   exit 1
 }
 
+write_config() {
+  cat > "${CONFIG_PATH}" <<EOF
+workspace_root = "${REPO_ROOT}"
+EOF
+}
+
+write_config
+
+if [[ "${CONFIG_ONLY}" -eq 1 ]]; then
+  echo "Wrote workspace config to ${CONFIG_PATH}"
+  exit 0
+fi
+
+CLAUDE_DIR="$(mkdir -p "${CLAUDE_DIR}" && cd "${CLAUDE_DIR}" && pwd)"
+SKILLS_DIR="${CLAUDE_DIR}/skills"
+AGENTS_DIR="${CLAUDE_DIR}/agents"
+
+mkdir -p "${SKILLS_DIR}" "${AGENTS_DIR}"
+
 install_item "${REPO_ROOT}/skills/daily-security-digest" "${SKILLS_DIR}/daily-security-digest"
 
 for agent in source-resolver web-source-collector item-filter report-writer; do
@@ -130,3 +129,4 @@ for agent in source-resolver web-source-collector item-filter report-writer; do
 done
 
 echo "Installed Daily Security Digest into ${CLAUDE_DIR}"
+echo "Wrote workspace config to ${CONFIG_PATH}"

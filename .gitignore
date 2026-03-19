@@ -16,6 +16,7 @@ env/
 planning/sources.toml
 planning/topics.md
 planning/report-style.md
+skills/daily-security-digest/config.toml
 
 # Generated run data (keep data/runs/.gitkeep)
 data/runs/*/

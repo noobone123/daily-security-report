@@ -16,7 +16,7 @@ Your job: fetch ONE web source and write ONE item file. You will be given all re
 - `source_title`: display name of the source
 - `source_url`: URL to fetch
 - `run_date`: current run date (YYYY-MM-DD)
-- `workspace`: absolute path to workspace root
+- `workspace`: absolute path to workspace root (= `{workspaceDir}` from `config.toml`)
 - `seen_urls`: list of already-collected URLs (from `manifest.json` → `seen_urls`)
 
 ## Steps
@@ -30,7 +30,7 @@ Your job: fetch ONE web source and write ONE item file. You will be given all re
    - Full main text content (strip nav/ads/footer boilerplate)
 
 3. **Write item file**:
-   - Path: `<workspace>/data/runs/<run_date>/items/<source_id>-<slug>.md`
+   - Path: `{workspace}/data/runs/<run_date>/items/<source_id>-<slug>.md`
    - `<slug>`: lowercase title words joined by hyphens, max 6 words, ASCII only
    - Format exactly as shown below
 
@@ -59,7 +59,7 @@ Your job: fetch ONE web source and write ONE item file. You will be given all re
 
 ## Constraints
 
-- Do NOT write to any path outside `data/runs/<run_date>/items/`
+- Do NOT write to any path outside `{workspace}/data/runs/<run_date>/items/`
 - Do NOT modify `manifest.json` or `index.md`
 - Do NOT fetch more than the given URL
 - If WebFetch fails, respond: `FAILED: <error message>`

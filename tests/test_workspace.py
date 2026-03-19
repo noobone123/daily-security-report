@@ -2,26 +2,60 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 
-from skill_lib import ValidationError, bootstrap_planning, format_source_toml, load_all_sources, load_workspace, remove_source_block, validate_workspace
+from skill_lib import ValidationError, bootstrap_planning, format_source_toml, load_all_sources, load_workspace, read_workspace_config, remove_source_block, validate_workspace, write_workspace_config
 
 
 class WorkspaceTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.repo_root = Path(__file__).resolve().parents[1]
-
     def test_bootstrap_templates_create_valid_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            templates_dir = self.repo_root / "skills" / "daily-security-digest" / "templates"
-            bootstrap_payload = bootstrap_planning(root, templates_dir)
+            env = self._make_skill_env(Path(tmpdir))
+            root = env["workspace"]
+            write_workspace_config(env["config_path"], root)
+            bootstrap_payload = bootstrap_planning(env["templates_dir"])
             self.assertEqual(len(bootstrap_payload["created"]), 3)
+            self.assertEqual(bootstrap_payload["workspace"], str(root.resolve()))
+            self.assertEqual(bootstrap_payload["workspace_config_path"], str(env["config_path"].resolve()))
+            self.assertEqual(bootstrap_payload["planning_dir"], str((root / "planning").resolve()))
+            self.assertEqual(bootstrap_payload["runs_dir"], str((root / "data" / "runs").resolve()))
 
             payload = validate_workspace(root)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["sources"], 0)
             self.assertEqual(payload["enabled_sources"], 0)
+
+    def test_read_workspace_config_returns_configured_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self._make_skill_env(Path(tmpdir))
+            root = env["workspace"]
+            write_workspace_config(env["config_path"], root)
+
+            resolved = read_workspace_config(env["config_path"])
+            self.assertEqual(resolved.root, root.resolve())
+            self.assertEqual(resolved.config_path, env["config_path"].resolve())
+
+    def test_read_workspace_config_rejects_missing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "missing.toml"
+            with self.assertRaisesRegex(ValidationError, "Missing workspace config"):
+                read_workspace_config(config_path)
+
+    def test_read_workspace_config_rejects_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text('workspace_root = "relative/path"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "absolute path"):
+                read_workspace_config(config_path)
+
+    def test_read_workspace_config_rejects_missing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            missing = Path(tmpdir) / "missing"
+            config_path.write_text(f'workspace_root = "{missing}"\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "does not exist"):
+                read_workspace_config(config_path)
 
     def test_workspace_rejects_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -116,6 +150,21 @@ class WorkspaceTest(unittest.TestCase):
             '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nkind = "rss"\nenabled = true\nnotes = "Example source."\nfetch.url = "https://example.com/feed.xml"\n',
             encoding="utf-8",
         )
+
+    def _make_skill_env(self, root: Path) -> dict[str, Path]:
+        repo_root = Path(__file__).resolve().parents[1]
+        skill_src = repo_root / "skills" / "daily-security-digest"
+        skill_dir = root / "skills" / "daily-security-digest"
+        templates_dir = skill_dir / "templates"
+        workspace = root / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_src / "templates", templates_dir)
+        return {
+            "skill_dir": skill_dir,
+            "templates_dir": templates_dir,
+            "config_path": skill_dir / "config.toml",
+            "workspace": workspace,
+        }
 
 
 if __name__ == "__main__":

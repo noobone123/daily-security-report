@@ -15,7 +15,6 @@ from skill_lib import ValidationError, bootstrap_planning
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Bootstrap planning files from bundled skill templates.")
-    parser.add_argument("--workspace", default=".", help="Workspace root")
     parser.add_argument(
         "--templates",
         default=str(SCRIPT_DIR.parent / "templates"),
@@ -24,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        payload = bootstrap_planning(Path(args.workspace), Path(args.templates))
+        payload = bootstrap_planning(Path(args.templates))
     except ValidationError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=False))
         return 1
