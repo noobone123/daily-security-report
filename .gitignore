@@ -15,6 +15,7 @@ env/
 # User-specific planning files (created by agent during onboarding)
 planning/sources.toml
 planning/topics.md
+planning/report-style.md
 
 # Generated run data (keep data/runs/.gitkeep)
 data/runs/*/

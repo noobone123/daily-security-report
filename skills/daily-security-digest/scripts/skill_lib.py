@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 ALLOWED_SOURCE_KINDS = {
     "github_user",
+    "github_feed",
     "rss",
     "web",
 }
@@ -28,6 +30,18 @@ ALLOWED_GITHUB_USER_EVENTS = {
     "PullRequestEvent",
     "WatchEvent",
 }
+ALLOWED_GITHUB_FEED_EVENTS = {
+    "ReleaseEvent",
+    "CreateEvent",
+    "PushEvent",
+    "PullRequestEvent",
+    "WatchEvent",
+    "IssuesEvent",
+    "IssueCommentEvent",
+    "ForkEvent",
+    "PublicEvent",
+    "MemberEvent",
+}
 
 
 class ValidationError(ValueError):
@@ -36,6 +50,13 @@ class ValidationError(ValueError):
 
 class FetchError(RuntimeError):
     """Raised when a remote fetch fails."""
+
+
+PLANNING_TEMPLATE_MAP = {
+    "sources.toml": "sources.toml.example",
+    "topics.md": "topics.md.example",
+    "report-style.md": "report-style.md.example",
+}
 
 
 @dataclass(slots=True)
@@ -141,6 +162,32 @@ def validate_workspace(workspace_root: Path) -> dict[str, Any]:
     }
 
 
+def bootstrap_planning(workspace_root: Path, templates_dir: Path) -> dict[str, Any]:
+    root = workspace_root.resolve()
+    planning_dir = root / "planning"
+    planning_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list[str] = []
+    existing: list[str] = []
+    for target_name, template_name in PLANNING_TEMPLATE_MAP.items():
+        template_path = templates_dir / template_name
+        if not template_path.is_file():
+            raise ValidationError(f"Missing planning template: {template_path}")
+        target_path = planning_dir / target_name
+        if target_path.exists():
+            existing.append(str(target_path))
+            continue
+        shutil.copyfile(template_path, target_path)
+        created.append(str(target_path))
+
+    return {
+        "workspace": str(root),
+        "planning_dir": str(planning_dir),
+        "created": created,
+        "existing": existing,
+    }
+
+
 def load_workspace(workspace_root: Path) -> WorkspaceSpec:
     root = workspace_root.resolve()
     planning_dir = root / "planning"
@@ -237,6 +284,8 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str, days:
     agent_sources = [s for s in workspace.enabled_sources if s.kind == "web"]
     if any(s.kind == "github_user" for s in script_sources) and not client.github_token:
         warnings.append("GITHUB_TOKEN not set. GitHub API rate limit is 60 requests/hour. Set the environment variable for 5000 req/hr.")
+    if any(s.kind == "github_feed" for s in script_sources) and not client.github_token:
+        warnings.append("GITHUB_TOKEN is required for github_feed sources. Without it, only public events from followed users are visible. Set the environment variable.")
     for source in script_sources:
         try:
             raw_records = fetch_raw_records(source, client=client, fetched_at=fetched_at)
@@ -298,6 +347,8 @@ def run_collection(workspace_root: Path, *, date_slug: str, timezone: str, days:
 def fetch_raw_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
     if source.kind == "github_user":
         return _fetch_github_user_records(source, client=client, fetched_at=fetched_at)
+    if source.kind == "github_feed":
+        return _fetch_github_feed_records(source, client=client, fetched_at=fetched_at)
     if source.kind == "rss":
         return _fetch_rss_records(source, client=client, fetched_at=fetched_at)
     raise FetchError(f"Unsupported source kind: {source.kind}")
@@ -596,6 +647,8 @@ def _section_text(path: Path, heading: str, lines: list[str]) -> str:
 def _validate_fetch(path: Path, kind: str, fetch: dict[str, str]) -> None:
     if kind == "github_user" and not (fetch.get("handle") or fetch.get("events_url")):
         raise ValidationError(f"{path}: github_user requires 'handle' or 'events_url'")
+    if kind == "github_feed" and not fetch.get("handle"):
+        raise ValidationError(f"{path}: github_feed requires 'handle'")
     if kind == "rss" and not fetch.get("url"):
         raise ValidationError(f"{path}: rss requires 'url'")
     if kind == "web" and not fetch.get("url"):
@@ -615,6 +668,28 @@ def _fetch_github_user_records(source: SourceSpec, *, client: HttpClient, fetche
         rows.append(
             RawRecord(
                 raw_id=stable_id(source.id, "github_user", event_id),
+                source_id=source.id,
+                fetched_at=fetched_at,
+                source_url=url,
+                payload=event,
+            )
+        )
+    return rows
+
+
+def _fetch_github_feed_records(source: SourceSpec, *, client: HttpClient, fetched_at: datetime) -> list[RawRecord]:
+    handle = source.fetch["handle"]
+    url = source.fetch.get("feed_url") or f"https://api.github.com/users/{handle}/received_events"
+    max_events = _fetch_int(source.fetch, "max_events", 50)
+    payload = client.get_json(url)
+    if not isinstance(payload, list):
+        raise FetchError(f"{source.id}: expected JSON list from {url}")
+    rows: list[RawRecord] = []
+    for event in payload[:max_events]:
+        event_id = str(event.get("id", len(rows)))
+        rows.append(
+            RawRecord(
+                raw_id=stable_id(source.id, "github_feed", event_id),
                 source_id=source.id,
                 fetched_at=fetched_at,
                 source_url=url,
@@ -701,26 +776,29 @@ def _atom_item_to_dict(entry: ElementTree.Element) -> dict[str, Any]:
 def _normalize_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
     if source.kind == "github_user":
         return _normalize_github_user_record(source, raw, window=window)
+    if source.kind == "github_feed":
+        return _normalize_github_feed_record(source, raw, window=window)
     if source.kind == "rss":
         return _normalize_rss_record(source, raw, window=window)
     return None
 
 
-def _normalize_github_user_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
-    event = raw.payload
-    event_type = str(event.get("type"))
-    if event_type not in ALLOWED_GITHUB_USER_EVENTS:
-        return None
-    published_at = parse_datetime(event.get("created_at")) or raw.fetched_at
-    if not _in_window(published_at, window):
-        return None
-    repo_name = str(event.get("repo", {}).get("name", ""))
-    actor = str(event.get("actor", {}).get("login") or source.fetch.get("handle") or "")
-    payload = event.get("payload", {})
-    canonical_url = f"https://github.com/{repo_name}" if repo_name else raw.source_url
+def _github_event_details(
+    event_type: str,
+    repo_name: str,
+    actor: str,
+    payload: dict[str, Any],
+    default_url: str,
+) -> tuple[str, str, str, list[str]] | None:
+    """Extract (canonical_url, title, excerpt, content_bits) for a GitHub event.
+
+    Returns None if the event type has no handler.
+    """
+    canonical_url = default_url
     title = f"{repo_name} update".strip()
     excerpt = ""
     content_bits: list[str] = []
+
     if event_type == "ReleaseEvent":
         release = payload.get("release", {})
         tag_name = str(release.get("tag_name") or release.get("name") or "new release")
@@ -757,6 +835,61 @@ def _normalize_github_user_record(source: SourceSpec, raw: RawRecord, *, window:
         title = f"{actor} starred {repo_name}".strip()
         excerpt = f"{actor} starred {repo_name}, which may signal a noteworthy project or release.".strip()
         content_bits.extend([title, excerpt])
+    elif event_type == "IssuesEvent":
+        issue = payload.get("issue", {})
+        action = str(payload.get("action") or "updated")
+        canonical_url = str(issue.get("html_url") or canonical_url)
+        title = collapse_ws(f"{repo_name} issue {action}: {issue.get('title', '')}")
+        excerpt = collapse_ws(issue.get("body") or issue.get("title") or title)
+        content_bits.extend([title, excerpt])
+    elif event_type == "IssueCommentEvent":
+        comment = payload.get("comment", {})
+        issue = payload.get("issue", {})
+        canonical_url = str(comment.get("html_url") or canonical_url)
+        title = collapse_ws(f"Comment on {repo_name}: {issue.get('title', '')}")
+        excerpt = collapse_ws(comment.get("body") or "")
+        content_bits.extend([title, excerpt])
+    elif event_type == "ForkEvent":
+        forkee = payload.get("forkee", {})
+        fork_name = str(forkee.get("full_name", ""))
+        title = f"{actor} forked {repo_name}".strip()
+        excerpt = f"{actor} forked {repo_name} to {fork_name}.".strip()
+        content_bits.extend([title, excerpt])
+    elif event_type == "PublicEvent":
+        title = f"{repo_name} was made public".strip()
+        excerpt = f"Repository {repo_name} has been made public by {actor}.".strip()
+        content_bits.extend([title, excerpt])
+    elif event_type == "MemberEvent":
+        member = payload.get("member", {})
+        member_login = str(member.get("login", ""))
+        action = str(payload.get("action") or "added")
+        title = f"{member_login} {action} as collaborator to {repo_name}".strip()
+        excerpt = f"{member_login} was {action} as a collaborator to {repo_name} by {actor}.".strip()
+        content_bits.extend([title, excerpt])
+    else:
+        return None
+
+    return canonical_url, title, excerpt, content_bits
+
+
+def _normalize_github_event(source: SourceSpec, raw: RawRecord, *, window: TimeWindow, allowed_events: set[str]) -> CollectedItem | None:
+    event = raw.payload
+    event_type = str(event.get("type"))
+    if event_type not in allowed_events:
+        return None
+    published_at = parse_datetime(event.get("created_at")) or raw.fetched_at
+    if not _in_window(published_at, window):
+        return None
+    repo_name = str(event.get("repo", {}).get("name", ""))
+    actor = str(event.get("actor", {}).get("login") or source.fetch.get("handle") or "")
+    payload = event.get("payload", {})
+    canonical_url = f"https://github.com/{repo_name}" if repo_name else raw.source_url
+
+    details = _github_event_details(event_type, repo_name, actor, payload, canonical_url)
+    if details is None:
+        return None
+    canonical_url, title, excerpt, content_bits = details
+
     return _build_item(
         source=source,
         raw=raw,
@@ -769,6 +902,14 @@ def _normalize_github_user_record(source: SourceSpec, raw: RawRecord, *, window:
         excerpt=trim_text(excerpt or title, 280),
         content_text=" ".join(bit for bit in content_bits if bit),
     )
+
+
+def _normalize_github_user_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
+    return _normalize_github_event(source, raw, window=window, allowed_events=ALLOWED_GITHUB_USER_EVENTS)
+
+
+def _normalize_github_feed_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:
+    return _normalize_github_event(source, raw, window=window, allowed_events=ALLOWED_GITHUB_FEED_EVENTS)
 
 
 def _normalize_rss_record(source: SourceSpec, raw: RawRecord, *, window: TimeWindow) -> CollectedItem | None:

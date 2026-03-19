@@ -1,0 +1,5 @@
+{
+  "name": "daily-security-report",
+  "description": "Collect security sources and generate a filtered daily digest with Claude Code skills and subagents.",
+  "version": "0.2.0"
+}

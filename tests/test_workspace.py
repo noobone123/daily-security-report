@@ -4,18 +4,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from skill_lib import ValidationError, format_source_toml, load_all_sources, load_workspace, remove_source_block, validate_workspace
+from skill_lib import ValidationError, bootstrap_planning, format_source_toml, load_all_sources, load_workspace, remove_source_block, validate_workspace
 
 
 class WorkspaceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[1]
 
-    def test_repo_sample_planning_is_valid(self) -> None:
-        payload = validate_workspace(self.repo_root)
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["sources"], 0)
-        self.assertEqual(payload["enabled_sources"], 0)
+    def test_bootstrap_templates_create_valid_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            templates_dir = self.repo_root / "skills" / "daily-security-digest" / "templates"
+            bootstrap_payload = bootstrap_planning(root, templates_dir)
+            self.assertEqual(len(bootstrap_payload["created"]), 3)
+
+            payload = validate_workspace(root)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["sources"], 0)
+            self.assertEqual(payload["enabled_sources"], 0)
 
     def test_workspace_rejects_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

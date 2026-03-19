@@ -1,97 +1,120 @@
 # Daily Security Digest
 
-An [Agent Skill](https://agentskills.io) that collects security intelligence from GitHub feeds, RSS, and web sources, then generates a filtered daily digest report.
+Daily Security Digest packages a Claude Code workflow for collecting GitHub feeds, RSS, and web sources, then writing a filtered daily report. This repository is the plugin root and the single source of truth for the skill and its subagents.
 
-Works with [Claude Code](https://claude.ai/code) and any other Agent Skills-compatible tool.
+## Distribution
 
-## How It Works
+There are two supported ways to use this project:
 
-The skill follows a 6-step workflow — a Python script handles structured APIs (zero token cost), and the calling agent handles everything else:
+1. Plugin distribution through Claude Code
+2. `scripts/install.sh` as a fallback when plugin loading is not available
 
-| Step | Who | What |
-|------|-----|------|
-| 0 | Agent | **Source Setup** — interactive onboarding, URL analysis, RSS detection |
-| 1 | Script | **Collect API/RSS** — fetch GitHub events and RSS feeds |
-| 2 | Agent | **Collect Web** — WebFetch each web source listed in `manifest.json` |
-| 3 | Agent | **Build Index** — rewrite `index.md` with LLM-generated summaries |
-| 4 | Agent | **Filter** — select items matching `planning/topics.md` |
-| 5 | Agent | **Report** — write `report.md` per `planning/report-style.md` |
+Do not use both for the same workspace, or Claude will see duplicate skills and subagents.
 
-## Project Structure
+## Canonical Layout
 
-```
-daily-security-report/              # Workspace root (this repo)
+```text
+daily-security-report/
+├── .claude-plugin/
+│   └── plugin.json
+├── agents/
+│   ├── source-resolver.md
+│   ├── web-source-collector.md
+│   ├── item-filter.md
+│   └── report-writer.md
 ├── skills/
-│   └── daily-security-digest/      # The skill (source of truth)
-│       ├── SKILL.md                # Skill instructions (agent reads this)
-│       └── scripts/
-│           ├── collect_materials.py # CLI entry point
-│           └── skill_lib.py        # Core engine
-├── planning/                       # User config (edit these)
-│   ├── sources.toml                # Source definitions
-│   ├── topics.md                   # Topic guidance for filtering
-│   └── report-style.md            # Report style preferences
-├── data/
-│   └── runs/                       # Generated output (gitignored)
-│       └── YYYY-MM-DD/
-│           ├── manifest.json
-│           ├── index.md
-│           ├── items/*.md
-│           ├── filtered/*.md
-│           └── report.md
+│   └── daily-security-digest/
+│       ├── SKILL.md
+│       ├── scripts/
+│       │   ├── bootstrap_planning.py
+│       │   ├── collect_materials.py
+│       │   └── skill_lib.py
+│       └── templates/
+│           ├── sources.toml.example
+│           ├── topics.md.example
+│           └── report-style.md.example
+├── scripts/
+│   └── install.sh
 └── tests/
 ```
 
-**Why this layout?** The [Agent Skills spec](https://agentskills.io/specification) defines a skill as a self-contained folder (`SKILL.md` + `scripts/` + `references/` + `assets/`). User-editable config (`planning/`) and generated output (`data/`) live outside the skill because they vary per user and per run. The script takes `--workspace .` to find the project root.
+`planning/` and `data/runs/` are runtime workspace state. They are created in the target workspace when the skill runs.
 
-## Installation
+## Plugin Install
 
-Most Agent Skills-compatible tools auto-discover skills from a `.claude/skills/` (or equivalent) directory. Since this repo keeps the skill source at `skills/daily-security-digest/`, create a symlink so your agent can find it.
+Plugin install is the official distribution path.
 
-### Quick Start (this repo)
-
-```bash
-git clone <this-repo-url> daily-security-report
-cd daily-security-report
-
-# Create the symlink for agent auto-discovery
-mkdir -p .claude/skills
-ln -s ../../skills/daily-security-digest .claude/skills/daily-security-digest
-```
-
-Start your agent. The skill appears as `/daily-security-digest`.
-
-On first run, the agent detects that all sample sources are disabled and walks you through interactive onboarding — just provide URLs, and it auto-detects RSS feeds vs. web pages vs. GitHub profiles.
-
-### Install into Another Project
+For local development, load the repository directly:
 
 ```bash
-mkdir -p your-project/.claude/skills
-ln -s /absolute/path/to/daily-security-report/skills/daily-security-digest \
-      your-project/.claude/skills/daily-security-digest
-
-# Copy planning templates (these are user-editable, not symlinked)
-cp -r /absolute/path/to/daily-security-report/planning your-project/planning
-
-# Create output directory
-mkdir -p your-project/data/runs
+claude --plugin-dir /absolute/path/to/daily-security-report
 ```
 
-### Install Globally (all projects)
+The skill will then be available as:
+
+```text
+/daily-security-report:daily-security-digest
+```
+
+When you later publish this repository to a plugin marketplace, the same layout can be shipped as-is.
+
+## Fallback Install Script
+
+If the target environment cannot use plugins directly, install the same canonical files into Claude's standalone directories:
 
 ```bash
-mkdir -p ~/.claude/skills
-ln -s /absolute/path/to/daily-security-report/skills/daily-security-digest \
-      ~/.claude/skills/daily-security-digest
+./scripts/install.sh --mode project --target /path/to/target-project
 ```
 
-When installed globally, the skill is available everywhere but still needs `planning/` at the project root.
+That installs:
+
+```text
+/path/to/target-project/.claude/skills/daily-security-digest
+/path/to/target-project/.claude/agents/source-resolver.md
+/path/to/target-project/.claude/agents/web-source-collector.md
+/path/to/target-project/.claude/agents/item-filter.md
+/path/to/target-project/.claude/agents/report-writer.md
+```
+
+For a global fallback install:
+
+```bash
+./scripts/install.sh --mode global --target "$HOME"
+```
+
+The fallback installer uses symlinks by default so the repository remains the only maintained source. If symlink creation is unavailable in the target environment, rerun with `--copy` as a last resort.
+
+After a fallback install, the skill is available as:
+
+```text
+/daily-security-digest
+```
+
+## Workflow
+
+The skill follows a 6-step workflow:
+
+| Step | Who | What |
+|------|-----|------|
+| -1 | Script | Bootstrap `planning/` files from bundled templates |
+| 0 | Agent | Source and topic onboarding |
+| 1 | Script | Collect GitHub and RSS items |
+| 2 | Agent | Fetch web-only sources with parallel subagents |
+| 3 | Agent | Summarize and filter items with parallel subagents |
+| 4 | Agent | Write `report.md` |
+| 5 | Agent | Deliver highlights to the user |
+
+On first run, the skill creates these workspace files if they do not already exist:
+
+- `planning/sources.toml`
+- `planning/topics.md`
+- `planning/report-style.md`
 
 ## Configuration
 
-### Sources (`planning/sources.toml`)
+### Sources
 
-Each source is a `[[sources]]` block:
+Each source is a `[[sources]]` block in `planning/sources.toml`:
 
 ```toml
 [[sources]]
@@ -106,54 +129,55 @@ fetch.url = "https://example.com/feed.xml"
 |------|-------------|------------------------|
 | `github_user` | Script (API) | `handle` or `events_url` |
 | `rss` | Script (XML) | `url` |
-| `web` | Agent (WebFetch) | `url` |
+| `web` | Agent | `url` |
 
-You can edit `sources.toml` manually or let the agent manage it interactively — just ask it to "add a source" or "remove source X".
+### Topics
 
-### Topics (`planning/topics.md`)
+`planning/topics.md` uses one `## Topic` section per area of interest. Each topic must include:
 
-One `## Heading` per topic. The agent uses this to filter collected items in Step 4.
+- `### Care About`
+- `### Usually Ignore`
+- `### Reporting Angle`
 
-```markdown
-# Topics
+`## All` catch-all sections are not supported.
 
-## All
+### Report Style
 
-Include all collected items in the report. Do not filter by topic.
-```
+`planning/report-style.md` must contain:
 
-To filter by specific topics, replace the `## All` section with one `## Heading` per topic describing what to look for.
+- `## Audience`
+- `## Language`
+- `## Output Format`
+- `## Extra Instructions`
 
-### Report Style (`planning/report-style.md`)
+## Environment
 
-Controls the report format. Required sections: Audience, Language, Output Format, Extra Instructions.
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GITHUB_TOKEN` | No | Raises GitHub API rate limits for `github_user` sources |
 
-## Environment Variables
-
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `GITHUB_TOKEN` | No | (none) | GitHub API auth. Without it: 60 req/hr. With it: 5000 req/hr. |
-
-## Running the Script Manually
+## Manual Script Run
 
 ```bash
 python3 skills/daily-security-digest/scripts/collect_materials.py \
-  --workspace . --timezone Asia/Shanghai
+  --workspace . \
+  --timezone Asia/Shanghai
 ```
 
-Optional: `--date YYYY-MM-DD` (defaults to today).
+Optional flags:
 
-Output is JSON to stdout. Collected files go to `data/runs/YYYY-MM-DD/`.
+- `--date YYYY-MM-DD`
+- `--days N`
 
-## Running Tests
+## Tests
 
 ```bash
 PYTHONPATH=skills/daily-security-digest/scripts \
-  python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
 ## Requirements
 
-- Python 3.11+ (uses `tomllib` from stdlib)
+- Claude Code 1.0.33+ for plugin support
+- Python 3.11+
 - No third-party Python dependencies
-- Any [Agent Skills](https://agentskills.io)-compatible tool (Claude Code, VS Code Copilot, Cursor, Gemini CLI, etc.)

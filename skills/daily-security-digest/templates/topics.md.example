@@ -1,0 +1,14 @@
+# Topics
+
+<!-- The agent will guide you through setting up topics on first run. -->
+<!-- IMPORTANT: `## All` catch-all headings are NOT valid. -->
+<!-- Each topic MUST have ### Care About and ### Usually Ignore subsections. -->
+<!--
+## Cloud Security
+### Care About
+Cloud detection engineering, detections-as-code, cloud-native security tooling.
+### Usually Ignore
+Generic marketing, vendor press releases.
+### Reporting Angle
+Focus on practical techniques and tooling updates.
+-->
