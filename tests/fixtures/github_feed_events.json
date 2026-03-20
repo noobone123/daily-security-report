@@ -1,0 +1,42 @@
+[
+  {
+    "id": "feed-comment-1",
+    "type": "IssueCommentEvent",
+    "created_at": "2026-03-18T01:10:00Z",
+    "actor": {"login": "upstream-maintainer"},
+    "repo": {"name": "sample-org/browser-lab"},
+    "payload": {
+      "comment": {
+        "html_url": "https://github.com/sample-org/browser-lab/issues/7#issuecomment-1",
+        "body": "Working exploit reproducer added for the sandbox escape."
+      },
+      "issue": {
+        "title": "Track browser sandbox escape",
+        "html_url": "https://github.com/sample-org/browser-lab/issues/7"
+      }
+    }
+  },
+  {
+    "id": "feed-ignore-1",
+    "type": "DeleteEvent",
+    "created_at": "2026-03-18T02:00:00Z",
+    "actor": {"login": "cleanup-bot"},
+    "repo": {"name": "sample-org/browser-lab"},
+    "payload": {}
+  },
+  {
+    "id": "feed-issue-1",
+    "type": "IssuesEvent",
+    "created_at": "2026-03-18T03:05:00Z",
+    "actor": {"login": "security-researcher"},
+    "repo": {"name": "sample-org/detection-lab"},
+    "payload": {
+      "action": "opened",
+      "issue": {
+        "html_url": "https://github.com/sample-org/detection-lab/issues/12",
+        "title": "Cloud detection gap",
+        "body": "Need coverage for suspicious STS AssumeRole patterns."
+      }
+    }
+  }
+]

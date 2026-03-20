@@ -144,7 +144,10 @@ Outputs under `{workspaceDir}/data/runs/YYYY-MM-DD/`:
 
 **Check warnings**: Read `manifest.json` → `warnings` array. If non-empty, inform the user
 (e.g., "GITHUB_TOKEN not set, rate limit may apply"). Also check `failures` for any
-sources that could not be collected, and report them to the user.
+sources that could not be collected, and report them to the user. `github_feed` is a
+strict authenticated GitHub home feed and requires `GITHUB_TOKEN`; it does not fall
+back to a public-only mode. `x_home` is an authenticated X home timeline source and
+requires `X_USER_ACCESS_TOKEN`; see `docs/x-home-setup.md` for the shortest setup flow.
 
 Before moving on to Step 2, repeat the resolved write location to the user in one line:
 - workspace root
@@ -176,15 +179,25 @@ with the remaining items.
 ### Step 3: Summarize and filter by topic (parallel subagents)
 
 Read `{workspaceDir}/planning/topics.md` for topic guidance.
-List all `{workspaceDir}/data/runs/YYYY-MM-DD/items/*.md` files.
+Run:
 
-**Batch items into groups of approximately 10.** For each batch, launch an **`item-filter`**
-subagent using the Agent tool. Issue all Agent tool calls in a single message so they run
-in parallel.
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/build_filter_batches.py \
+  --workspace "{workspaceDir}" \
+  --run-date YYYY-MM-DD
+```
+
+This helper reads item headers only, groups items by `source_id`, and builds filter batches:
+- if a source has `<= 30` items, emit one batch for that source
+- if a source has `> 30` items, split it into source-scoped chunks of 10
+- within a source, sort by `Published At` descending before batching
+
+For each returned batch, launch an **`item-filter`** subagent using the Agent tool.
+Issue all Agent tool calls in a single message so they run in parallel.
 
 Each subagent receives:
 ```
-item_paths, topics_path, workspace, run_date
+source_id, source_title, item_paths, topics_path, workspace, run_date
 ```
 It writes summaries into item files and returns a JSON array of `{path, relevant, topics, title, url}`.
 
@@ -246,7 +259,9 @@ The collector reads only `sources.toml`; `topics.md` and `report-style.md` are f
 
 | Kind | Handled by | Notes |
 |------|-----------|-------|
-| `github_user` | Script | GitHub user event feed (API JSON) |
+| `github_user` | Script | Public GitHub profile event feed (API JSON) |
+| `github_feed` | Script | Authenticated GitHub home feed (`fetch.handle = "@authenticated"`, requires `GITHUB_TOKEN`) |
+| `x_home` | Script | Authenticated X home timeline (official API, requires `X_USER_ACCESS_TOKEN`) |
 | `rss` | Script | RSS/Atom feed (XML) |
 | `web` | Agent | Any web page — agent uses WebFetch |
 

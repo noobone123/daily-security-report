@@ -7,15 +7,19 @@ import unittest
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
+from build_filter_batches import build_batches_for_run
 from skill_lib import (
     CollectedItem,
     ValidationError,
+    _item_dedupe_key,
     config_path_for_templates,
     build_day_window,
     build_time_window,
     dedupe_items,
     find_last_window_end,
+    load_seen_item_keys,
     load_seen_urls,
     run_collection,
     sort_items,
@@ -171,6 +175,29 @@ class CollectionTest(unittest.TestCase):
         ordered = sort_items([older, newer])
         self.assertEqual([item.item_id for item in ordered], ["newer", "older"])
 
+    def test_watch_events_do_not_dedupe_by_repository_url(self) -> None:
+        first_watch = self._make_item(
+            item_id="watch-1",
+            published_at=datetime(2026, 3, 18, 1, 0, tzinfo=UTC),
+            excerpt="first watch",
+            content_text="star one",
+            canonical_url="https://github.com/example/shared-repo",
+            kind="watchevent",
+            external_id="evt-1",
+        )
+        second_watch = self._make_item(
+            item_id="watch-2",
+            published_at=datetime(2026, 3, 18, 2, 0, tzinfo=UTC),
+            excerpt="second watch",
+            content_text="star two",
+            canonical_url="https://github.com/example/shared-repo",
+            kind="watchevent",
+            external_id="evt-2",
+        )
+        kept = sort_items(dedupe_items([first_watch, second_watch]))
+        self.assertEqual([item.item_id for item in kept], ["watch-2", "watch-1"])
+        self.assertEqual(_item_dedupe_key(first_watch), "event:evt-1")
+
     def _write_fixture_workspace(self, workspace: Path, *, broken_rss: bool = False) -> None:
         (workspace / "planning").mkdir(parents=True, exist_ok=True)
         (workspace / "data" / "runs").mkdir(parents=True, exist_ok=True)
@@ -232,12 +259,14 @@ class CollectionTest(unittest.TestCase):
         excerpt: str,
         content_text: str,
         canonical_url: str,
+        kind: str = "web",
+        external_id: str | None = None,
     ) -> CollectedItem:
         return CollectedItem(
             item_id=item_id,
             source_id="fixture-web",
-            kind="web",
-            external_id=item_id,
+            kind=kind,
+            external_id=external_id or item_id,
             canonical_url=canonical_url,
             title=item_id,
             author=None,
@@ -268,7 +297,10 @@ class ManifestFieldsTest(unittest.TestCase):
             self.assertIsInstance(manifest["warnings"], list)
             self.assertIn("collected_urls", manifest)
             self.assertIsInstance(manifest["collected_urls"], list)
+            self.assertIn("collected_item_keys", manifest)
+            self.assertIsInstance(manifest["collected_item_keys"], list)
             self.assertIn("seen_urls", manifest)
+            self.assertIn("seen_item_keys", manifest)
 
     def test_github_token_warning_when_unset(self) -> None:
         import os
@@ -310,6 +342,250 @@ class ManifestFieldsTest(unittest.TestCase):
         return templates_dir
 
 
+class GithubFeedCollectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.skill_src = self.repo_root / "skills" / "daily-security-digest"
+
+    def test_github_feed_without_token_warns_and_records_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            self._write_github_feed_workspace(workspace, handle="@authenticated")
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            with mock.patch.dict("os.environ", {"GITHUB_TOKEN": ""}, clear=False):
+                manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
+        token_warnings = [warning for warning in manifest["warnings"] if "github_feed" in warning and "GITHUB_TOKEN" in warning]
+        self.assertEqual(len(token_warnings), 1)
+        self.assertEqual(manifest["failure_count"], 1)
+        self.assertEqual(manifest["item_count"], 0)
+        self.assertIn("github_feed requires GITHUB_TOKEN", manifest["failures"][0]["error"])
+
+    def test_github_feed_handle_mismatch_records_failure(self) -> None:
+        seen_urls: list[str] = []
+
+        def fake_get_json(_client, url: str):
+            seen_urls.append(url)
+            if url == "https://api.github.com/user":
+                return {"login": "actual-user"}
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            self._write_github_feed_workspace(workspace, handle="someone-else")
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}, clear=False):
+                with mock.patch("skill_lib.HttpClient.get_json", new=fake_get_json):
+                    manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
+        self.assertEqual(seen_urls, ["https://api.github.com/user"])
+        self.assertEqual(manifest["failure_count"], 1)
+        self.assertFalse(any("github_feed" in warning and "GITHUB_TOKEN" in warning for warning in manifest["warnings"]))
+        self.assertIn("does not match authenticated GitHub user 'actual-user'", manifest["failures"][0]["error"])
+        self.assertIn("Use github_user for public profile events", manifest["failures"][0]["error"])
+
+    def _write_github_feed_workspace(self, workspace: Path, *, handle: str) -> None:
+        (workspace / "planning").mkdir(parents=True, exist_ok=True)
+        (workspace / "planning" / "report-style.md").write_text(
+            "# Report Style\n\n## Audience\n\nAnalyst.\n\n## Language\n\nEnglish.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nKeep it short.\n",
+            encoding="utf-8",
+        )
+        sources_toml = (
+            '[[sources]]\n'
+            'id = "fixture-github-feed"\n'
+            'title = "Fixture GitHub Feed"\n'
+            'kind = "github_feed"\n'
+            'enabled = true\n'
+            'fetch.handle = "' + handle + '"\n'
+        )
+        (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
+
+    def _make_templates_dir(self, root: Path) -> Path:
+        templates_dir = root / "skill" / "templates"
+        templates_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.skill_src / "templates", templates_dir)
+        return templates_dir
+
+
+class XHomeCollectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repo_root = Path(__file__).resolve().parents[1]
+        self.skill_src = self.repo_root / "skills" / "daily-security-digest"
+
+    def test_x_home_without_credentials_warns_and_records_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            self._write_x_home_workspace(workspace)
+            templates_dir = self._make_templates_dir(Path(tmpdir))
+            write_workspace_config(config_path_for_templates(templates_dir), workspace)
+            with mock.patch.dict("os.environ", {}, clear=True):
+                manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
+        x_warnings = [warning for warning in manifest["warnings"] if "X user access token" in warning]
+        self.assertEqual(len(x_warnings), 1)
+        self.assertEqual(manifest["failure_count"], 1)
+        self.assertEqual(manifest["item_count"], 0)
+        self.assertIn("x_home requires X_USER_ACCESS_TOKEN", manifest["failures"][0]["error"])
+
+    def _write_x_home_workspace(self, workspace: Path) -> None:
+        (workspace / "planning").mkdir(parents=True, exist_ok=True)
+        (workspace / "planning" / "report-style.md").write_text(
+            "# Report Style\n\n## Audience\n\nAnalyst.\n\n## Language\n\nEnglish.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nKeep it short.\n",
+            encoding="utf-8",
+        )
+        sources_toml = (
+            '[[sources]]\n'
+            'id = "fixture-x-home"\n'
+            'title = "Fixture X Home"\n'
+            'kind = "x_home"\n'
+            'enabled = true\n'
+        )
+        (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
+
+    def _make_templates_dir(self, root: Path) -> Path:
+        templates_dir = root / "skill" / "templates"
+        templates_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.skill_src / "templates", templates_dir)
+        return templates_dir
+
+
+class FilterBatchPlannerTest(unittest.TestCase):
+    def test_build_filter_batches_keeps_sources_separate_when_small(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            item_dir = workspace / "data" / "runs" / "2026-03-18" / "items"
+            item_dir.mkdir(parents=True)
+            self._write_item(
+                item_dir / "a1.md",
+                title="A1",
+                source_title="Source A",
+                source_id="source-a",
+                published_at="2026-03-18T03:00:00+00:00",
+                url="https://example.com/a1",
+            )
+            self._write_item(
+                item_dir / "a2.md",
+                title="A2",
+                source_title="Source A",
+                source_id="source-a",
+                published_at="2026-03-18T01:00:00+00:00",
+                url="https://example.com/a2",
+            )
+            self._write_item(
+                item_dir / "b1.md",
+                title="B1",
+                source_title="Source B",
+                source_id="source-b",
+                published_at="2026-03-18T02:00:00+00:00",
+                url="https://example.com/b1",
+            )
+            payload = build_batches_for_run(workspace=workspace, run_date="2026-03-18")
+        self.assertEqual(payload["batch_count"], 2)
+        batches_by_source = {batch["source_id"]: batch for batch in payload["batches"]}
+        self.assertEqual(
+            [Path(path).name for path in batches_by_source["source-a"]["item_paths"]],
+            ["a1.md", "a2.md"],
+        )
+        self.assertEqual(
+            [Path(path).name for path in batches_by_source["source-b"]["item_paths"]],
+            ["b1.md"],
+        )
+
+    def test_build_filter_batches_splits_large_source_into_chunks_of_ten(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            item_dir = workspace / "data" / "runs" / "2026-03-18" / "items"
+            item_dir.mkdir(parents=True)
+            for index in range(31):
+                self._write_item(
+                    item_dir / f"x{index:02d}.md",
+                    title=f"Item {index}",
+                    source_title="Source X",
+                    source_id="source-x",
+                    published_at=f"2026-03-18T{index % 24:02d}:00:00+00:00",
+                    url=f"https://example.com/x{index}",
+                )
+            payload = build_batches_for_run(workspace=workspace, run_date="2026-03-18")
+        self.assertEqual(payload["batch_count"], 4)
+        sizes = [len(batch["item_paths"]) for batch in payload["batches"]]
+        self.assertEqual(sizes, [10, 10, 10, 1])
+        self.assertTrue(all(batch["source_id"] == "source-x" for batch in payload["batches"]))
+
+    def test_build_filter_batches_sorts_within_source_by_published_at_desc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            item_dir = workspace / "data" / "runs" / "2026-03-18" / "items"
+            item_dir.mkdir(parents=True)
+            self._write_item(
+                item_dir / "late.md",
+                title="Late",
+                source_title="Source A",
+                source_id="source-a",
+                published_at="2026-03-18T03:00:00+00:00",
+                url="https://example.com/late",
+            )
+            self._write_item(
+                item_dir / "early.md",
+                title="Early",
+                source_title="Source A",
+                source_id="source-a",
+                published_at="2026-03-18T01:00:00+00:00",
+                url="https://example.com/early",
+            )
+            self._write_item(
+                item_dir / "mid.md",
+                title="Mid",
+                source_title="Source A",
+                source_id="source-a",
+                published_at="2026-03-18T02:00:00+00:00",
+                url="https://example.com/mid",
+            )
+            payload = build_batches_for_run(workspace=workspace, run_date="2026-03-18")
+        self.assertEqual(
+            [Path(path).name for path in payload["batches"][0]["item_paths"]],
+            ["late.md", "mid.md", "early.md"],
+        )
+
+    def _write_item(
+        self,
+        path: Path,
+        *,
+        title: str,
+        source_title: str,
+        source_id: str,
+        published_at: str,
+        url: str,
+    ) -> None:
+        path.write_text(
+            "\n".join(
+                [
+                    f"# {title}",
+                    "",
+                    "## Source",
+                    "",
+                    f"{source_title} (`{source_id}`)",
+                    "",
+                    "## Published At",
+                    "",
+                    published_at,
+                    "",
+                    "## URL",
+                    "",
+                    url,
+                    "",
+                    "## Summary",
+                    "",
+                    "summary",
+                    "",
+                    "## Content",
+                    "",
+                    "content",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+
 class SeenUrlsTest(unittest.TestCase):
     """Tests for cross-run dedup (Feature 3)."""
 
@@ -325,6 +601,24 @@ class SeenUrlsTest(unittest.TestCase):
             write_json(run_dir / "manifest.json", {"collected_urls": ["https://a.com", "https://b.com"]})
             seen = load_seen_urls(root)
             self.assertEqual(seen, {"https://a.com", "https://b.com"})
+
+    def test_load_seen_item_keys_reads_new_manifest_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "data" / "runs" / "2026-03-17"
+            run_dir.mkdir(parents=True)
+            write_json(run_dir / "manifest.json", {"collected_item_keys": ["event:1", "https://b.com"]})
+            seen = load_seen_item_keys(root)
+            self.assertEqual(seen, {"event:1", "https://b.com"})
+
+    def test_load_seen_item_keys_falls_back_to_urls_for_old_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_dir = root / "data" / "runs" / "2026-03-17"
+            run_dir.mkdir(parents=True)
+            write_json(run_dir / "manifest.json", {"collected_urls": ["https://a.com"]})
+            seen = load_seen_item_keys(root)
+            self.assertEqual(seen, {"https://a.com"})
 
     def test_load_seen_urls_excludes_current_date(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

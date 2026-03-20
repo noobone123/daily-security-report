@@ -5,6 +5,22 @@
 #   [[sources]]
 #   id = "my-feed"
 #   title = "My Security Feed"
-#   kind = "rss"          # rss | github_user | web
+#   kind = "rss"          # rss | github_user | github_feed | x_home | web
 #   enabled = true
 #   fetch.url = "https://example.com/feed.xml"
+#
+# GitHub home feed example:
+#   [[sources]]
+#   id = "github-home"
+#   title = "GitHub Home Feed"
+#   kind = "github_feed"
+#   enabled = true
+#   fetch.handle = "@authenticated"   # requires GITHUB_TOKEN
+#
+# X home timeline example:
+#   [[sources]]
+#   id = "x-home"
+#   title = "X Home Timeline"
+#   kind = "x_home"
+#   enabled = true
+#   notes = "Official X home timeline."   # requires X_USER_ACCESS_TOKEN

@@ -112,7 +112,63 @@ class DistributionTest(unittest.TestCase):
     def test_source_resolver_contract_documents_handle(self) -> None:
         text = (self.repo_root / "agents" / "source-resolver.md").read_text(encoding="utf-8")
         self.assertIn("fetch.handle", text)
+        self.assertIn("github_feed", text)
+        self.assertIn("x_home", text)
+        self.assertIn("x.com/home", text)
+        self.assertIn("@authenticated", text)
         self.assertNotIn("fetch.username", text)
+
+    def test_docs_publish_github_feed_kind(self) -> None:
+        readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
+        skill = (self.skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        template = (self.templates_dir / "sources.toml.example").read_text(encoding="utf-8")
+        for text in (readme, skill, template):
+            self.assertIn("github_feed", text)
+            self.assertIn("x_home", text)
+        self.assertIn("@authenticated", readme)
+        self.assertIn("@authenticated", skill)
+        self.assertIn("@authenticated", template)
+        self.assertIn("X_USER_ACCESS_TOKEN", readme)
+        self.assertIn("X_USER_ACCESS_TOKEN", skill)
+        self.assertIn("X_USER_ACCESS_TOKEN", template)
+
+    def test_readme_links_to_github_feed_setup_doc(self) -> None:
+        readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
+        doc_path = self.repo_root / "docs" / "github-feed-setup.md"
+        self.assertTrue(doc_path.exists())
+        self.assertIn("docs/github-feed-setup.md", readme)
+
+    def test_readme_links_to_x_home_setup_doc(self) -> None:
+        readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
+        doc_path = self.repo_root / "docs" / "x-home-setup.md"
+        self.assertTrue(doc_path.exists())
+        self.assertIn("docs/x-home-setup.md", readme)
+        self.assertNotIn("X_API_KEY", readme)
+        self.assertNotIn("X_API_SECRET", readme)
+        self.assertNotIn("X_ACCESS_TOKEN_SECRET", readme)
+
+    def test_x_home_setup_doc_is_concise_and_bearer_focused(self) -> None:
+        text = (self.repo_root / "docs" / "x-home-setup.md").read_text(encoding="utf-8")
+        self.assertIn("本项目目前只需要一个环境变量", text)
+        self.assertIn("X_USER_ACCESS_TOKEN", text)
+        self.assertIn("/2/users/me", text)
+        self.assertIn("reverse_chronological", text)
+        self.assertNotIn("X_API_KEY", text)
+        self.assertNotIn("X_API_SECRET", text)
+        self.assertNotIn("X_ACCESS_TOKEN_SECRET", text)
+
+    def test_item_filter_contract_is_source_scoped(self) -> None:
+        text = (self.repo_root / "agents" / "item-filter.md").read_text(encoding="utf-8")
+        self.assertIn("source_id", text)
+        self.assertIn("same source", text)
+        self.assertIn("All `item_paths` in one invocation must belong to the same source", text)
+
+    def test_skill_documents_source_scoped_filter_batches(self) -> None:
+        text = (self.skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("build_filter_batches.py", text)
+        self.assertIn("<= 30", text)
+        self.assertIn("chunks of 10", text)
+        self.assertIn("source_id, source_title, item_paths", text)
 
 
 class GithubUserHandleContractTest(unittest.TestCase):
@@ -140,6 +196,13 @@ class GithubUserHandleContractTest(unittest.TestCase):
 
         self.assertEqual(client.seen_url, "https://api.github.com/users/sample-researcher/events/public")
         self.assertEqual(len(items), 2)
+
+    def test_http_client_sets_github_api_headers(self) -> None:
+        client = HttpClient(github_token="secret-token")
+        headers = client._headers_for("https://api.github.com/user")
+        self.assertEqual(headers["Accept"], "application/vnd.github+json")
+        self.assertEqual(headers["X-GitHub-Api-Version"], "2022-11-28")
+        self.assertEqual(headers["Authorization"], "Bearer secret-token")
 
 
 class StubHttpClient(HttpClient):

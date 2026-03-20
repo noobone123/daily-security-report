@@ -1,6 +1,6 @@
 # Daily Security Digest
 
-Daily Security Digest packages a Claude Code workflow for collecting GitHub feeds, RSS, and web sources, then writing a filtered daily report. This repository is the plugin root and the single source of truth for the skill and its subagents.
+Daily Security Digest packages a Claude Code workflow for collecting GitHub profile events, authenticated GitHub home feed events, official X home timeline events, RSS, and web sources, then writing a filtered daily report. This repository is the plugin root and the single source of truth for the skill and its subagents.
 
 ## Distribution
 
@@ -110,9 +110,9 @@ The skill follows a 6-step workflow:
 |------|-----|------|
 | -1 | Script | Bootstrap `planning/` files from bundled templates |
 | 0 | Agent | Source and topic onboarding |
-| 1 | Script | Collect GitHub and RSS items |
+| 1 | Script | Collect structured API / RSS sources |
 | 2 | Agent | Fetch web-only sources with parallel subagents |
-| 3 | Agent | Summarize and filter items with parallel subagents |
+| 3 | Agent + Script | Build source-scoped filter batches, then summarize and filter them in parallel |
 | 4 | Agent | Write `report.md` |
 | 5 | Agent | Deliver highlights to the user |
 
@@ -167,8 +167,42 @@ fetch.url = "https://example.com/feed.xml"
 | Kind | Collected by | Required `fetch` fields |
 |------|-------------|------------------------|
 | `github_user` | Script (API) | `handle` or `events_url` |
+| `github_feed` | Script (API) | `handle` (`@authenticated` recommended) |
+| `x_home` | Script (API) | none |
 | `rss` | Script (XML) | `url` |
 | `web` | Agent | `url` |
+
+`github_user` follows the public event feed for a specific GitHub profile.
+`github_feed` follows the authenticated user's GitHub home feed and should usually be configured as:
+
+```toml
+[[sources]]
+id = "github-home"
+title = "GitHub Home Feed"
+kind = "github_feed"
+enabled = true
+fetch.handle = "@authenticated"
+```
+
+`github_feed` uses the GitHub REST events API. It does not fetch the HTML home page and it does not store credentials in `config.toml` or `sources.toml`.
+
+For step-by-step token creation and local setup, see [docs/github-feed-setup.md](/home/h1k0/codes/daily-security-report/docs/github-feed-setup.md).
+
+`x_home` uses X's official authenticated home timeline API. It does not fetch the HTML home page and it does not attempt to reproduce `For You`.
+
+```toml
+[[sources]]
+id = "x-home"
+title = "X Home Timeline"
+kind = "x_home"
+enabled = true
+```
+
+```bash
+export X_USER_ACCESS_TOKEN='paste-token-here'
+```
+
+For step-by-step X setup, see [docs/x-home-setup.md](/home/h1k0/codes/daily-security-report/docs/x-home-setup.md).
 
 ### Topics
 
@@ -193,7 +227,11 @@ fetch.url = "https://example.com/feed.xml"
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `GITHUB_TOKEN` | No | Raises GitHub API rate limits for `github_user` sources |
+| `GITHUB_TOKEN` | Required for `github_feed`; optional for `github_user` | Authenticates GitHub home feed access and raises GitHub API rate limits for `github_user` sources |
+| `X_USER_ACCESS_TOKEN` | Required for `x_home` | Authenticated user's X user access token used as a Bearer token for the official home timeline API |
+
+See [docs/github-feed-setup.md](/home/h1k0/codes/daily-security-report/docs/github-feed-setup.md) for how to create and export `GITHUB_TOKEN`.
+See [docs/x-home-setup.md](/home/h1k0/codes/daily-security-report/docs/x-home-setup.md) for how to configure X credentials.
 
 ## Manual Script Run
 

@@ -93,6 +93,20 @@ class WorkspaceTest(unittest.TestCase):
         self.assertIn("enabled = true", block)
         self.assertIn('fetch.url = "https://example.com/feed.xml"', block)
 
+    def test_format_source_toml_x_home(self) -> None:
+        block = format_source_toml(
+            source_id="my-x-home",
+            title="My X Home",
+            kind="x_home",
+            enabled=True,
+            notes="Official X home timeline.",
+            fetch={},
+        )
+        self.assertIn('id = "my-x-home"', block)
+        self.assertIn('kind = "x_home"', block)
+        self.assertIn("enabled = true", block)
+        self.assertNotIn("fetch.", block)
+
     def test_format_source_toml_rejects_bad_kind(self) -> None:
         with self.assertRaises(ValidationError):
             format_source_toml(
