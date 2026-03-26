@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 from core import (
     FetchError,
     HttpClient,
+    RSS_DISABLED_MESSAGE,
     collapse_ws,
     parse_datetime,
     slugify,
@@ -49,15 +50,7 @@ def resolve_source(raw_input: str, user_label: str = "", *, client: HttpClient |
         }
 
     if _looks_like_feed_url(value):
-        title = user_label or _title_from_url(value)
-        return {
-            "id": slugify(title),
-            "title": title,
-            "kind": "rss",
-            "enabled": True,
-            "fetch": {"url": value},
-            "notes": "RSS feed provided directly",
-        }
+        raise ValueError(RSS_DISABLED_MESSAGE)
 
     if _looks_like_url(value):
         http = client or HttpClient(github_token=os.environ.get("GITHUB_TOKEN"))
@@ -66,30 +59,23 @@ def resolve_source(raw_input: str, user_label: str = "", *, client: HttpClient |
         except Exception as exc:  # noqa: BLE001
             return {
                 "id": slugify(user_label or _title_from_url(value)),
-                "title": user_label or _title_from_url(value),
-                "kind": "web",
-                "enabled": True,
-                "fetch": {"url": value},
-                "notes": f"RSS detection failed, will use platform-native web collector: {exc}",
-            }
+            "title": user_label or _title_from_url(value),
+            "kind": "web",
+            "enabled": True,
+            "fetch": {"url": value},
+            "notes": f"Source fetch failed during resolution, will use platform-native web collector: {exc}",
+        }
         title = user_label or _extract_title(html) or _title_from_url(value)
         feed_url = _discover_feed_url(html, value)
         if feed_url:
-            return {
-                "id": slugify(title),
-                "title": title,
-                "kind": "rss",
-                "enabled": True,
-                "fetch": {"url": feed_url},
-                "notes": f"RSS feed auto-detected at {feed_url}",
-            }
+            raise ValueError(f"{RSS_DISABLED_MESSAGE} Detected feed: {feed_url}")
         return {
             "id": slugify(title),
             "title": title,
             "kind": "web",
             "enabled": True,
             "fetch": {"url": value},
-            "notes": "No RSS found, will use platform-native web collector",
+            "notes": "Resolved as a website source for the platform-native web collector",
         }
 
     return {

@@ -79,19 +79,33 @@ class WorkspaceTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "missing 'kind'"):
                 load_workspace(root)
 
-    def test_format_source_toml_rss(self) -> None:
-        block = format_source_toml(
-            source_id="my-blog-feed",
-            title="My Blog Feed",
-            kind="rss",
-            enabled=True,
-            notes="Auto-detected RSS.",
-            fetch={"url": "https://example.com/feed.xml"},
-        )
-        self.assertIn('id = "my-blog-feed"', block)
-        self.assertIn('kind = "rss"', block)
-        self.assertIn("enabled = true", block)
-        self.assertIn('fetch.url = "https://example.com/feed.xml"', block)
+    def test_load_workspace_rejects_legacy_rss_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write_valid_workspace(root)
+            (root / "planning" / "sources.toml").write_text(
+                '[[sources]]\n'
+                'id = "legacy-rss"\n'
+                'title = "Legacy RSS"\n'
+                'kind = "rss"\n'
+                'enabled = true\n'
+                'notes = "Legacy feed."\n'
+                'fetch.url = "https://example.com/feed.xml"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "RSS/Atom sources are no longer supported"):
+                load_workspace(root)
+
+    def test_format_source_toml_rejects_rss(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "RSS/Atom sources are no longer supported"):
+            format_source_toml(
+                source_id="my-blog-feed",
+                title="My Blog Feed",
+                kind="rss",
+                enabled=True,
+                notes="Auto-detected RSS.",
+                fetch={"url": "https://example.com/feed.xml"},
+            )
 
     def test_format_source_toml_rejects_bad_kind(self) -> None:
         with self.assertRaises(ValidationError):
@@ -157,7 +171,7 @@ class WorkspaceTest(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "planning" / "sources.toml").write_text(
-            '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nkind = "rss"\nenabled = true\nnotes = "Example source."\nfetch.url = "https://example.com/feed.xml"\n',
+            '[[sources]]\nid = "demo-source"\ntitle = "Demo Source"\nkind = "web"\nenabled = true\nnotes = "Example source."\nfetch.url = "https://example.com/security"\n',
             encoding="utf-8",
         )
 

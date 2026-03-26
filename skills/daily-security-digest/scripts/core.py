@@ -20,6 +20,10 @@ from platforms import SUPPORTED_SOURCE_KINDS, adapter_for
 
 ALLOWED_SOURCE_KINDS = set(SUPPORTED_SOURCE_KINDS)
 GITHUB_API_VERSION = "2022-11-28"
+RSS_DISABLED_MESSAGE = (
+    "RSS/Atom sources are no longer supported. "
+    "Use a website homepage or section page as a 'web' source instead."
+)
 
 
 class ValidationError(ValueError):
@@ -279,6 +283,8 @@ def load_all_sources(path: Path) -> list[SourceSpec]:
         kind = str(entry.get("kind", "")).strip().lower()
         if not kind:
             raise ValidationError(f"{path}: source '{source_id}' is missing 'kind'")
+        if kind == "rss":
+            raise ValidationError(f"{path}: {RSS_DISABLED_MESSAGE}")
         if kind not in ALLOWED_SOURCE_KINDS:
             raise ValidationError(f"{path}: source '{source_id}' unsupported kind '{kind}'")
         enabled_raw = entry.get("enabled")
@@ -697,6 +703,8 @@ def _section_text(path: Path, heading: str, lines: list[str]) -> str:
 
 
 def _validate_fetch(path: Path, kind: str, fetch: dict[str, str]) -> None:
+    if kind == "rss":
+        raise ValidationError(f"{path}: {RSS_DISABLED_MESSAGE}")
     if kind == "web" and not fetch.get("url"):
         raise ValidationError(f"{path}: web source requires 'url'")
     if kind == "web":
@@ -805,6 +813,8 @@ def format_source_toml(
 ) -> str:
     """Return a single ``[[sources]]`` TOML block ready to append to sources.toml."""
     sid = slugify(source_id)
+    if kind == "rss":
+        raise ValidationError(RSS_DISABLED_MESSAGE)
     if kind not in ALLOWED_SOURCE_KINDS:
         raise ValidationError(f"Unknown source kind: {kind!r}")
     _validate_fetch(Path("(generated)"), kind, {k: str(v) for k, v in fetch.items()})

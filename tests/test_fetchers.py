@@ -74,23 +74,6 @@ class FetcherTest(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertEqual({item.kind for item in items}, {"issuecommentevent", "issuesevent"})
 
-    def test_rss_normalization(self) -> None:
-        rss_source = SourceSpec(
-            id="fixture-rss",
-            title="Fixture RSS",
-            kind="rss",
-            enabled=True,
-            fetch={"url": self._file_url("rss.xml")},
-            notes="fixture",
-        )
-        rss_items = normalize_raw_records(
-            rss_source,
-            fetch_raw_records(rss_source, client=self.client, fetched_at=self.fetched_at),
-            window=self.window,
-        )
-        self.assertEqual(len(rss_items), 1)
-        self.assertEqual(rss_items[0].canonical_url, "https://example.com/blog/cloud-detection-rule-update")
-
     def _file_url(self, name: str) -> str:
         return (self.fixtures / name).resolve().as_uri()
 

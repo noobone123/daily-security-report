@@ -67,16 +67,14 @@ class CollectionTest(unittest.TestCase):
             self.assertEqual(manifest["planning_dir"], str((workspace / "planning").resolve()))
             self.assertEqual(manifest["runs_dir"], str((workspace / "data" / "runs").resolve()))
 
-    def test_collect_materials_records_failures(self) -> None:
+    def test_run_collection_rejects_legacy_rss_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            self._write_fixture_workspace(workspace, broken_rss=True)
+            self._write_fixture_workspace(workspace, include_rss=True)
             templates_dir = self._make_templates_dir(Path(tmpdir))
             write_workspace_config(config_path_for_templates(templates_dir), workspace)
-            manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
-            index_text = (workspace / "data" / "runs" / "2026-03-18" / "index.md").read_text(encoding="utf-8")
-            self.assertEqual(manifest["failure_count"], 1)
-            self.assertIn("fixture-rss", index_text)
+            with self.assertRaisesRegex(ValidationError, "RSS/Atom sources are no longer supported"):
+                run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
 
     def test_collect_materials_writes_empty_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -200,14 +198,13 @@ class CollectionTest(unittest.TestCase):
         self.assertEqual([item.item_id for item in kept], ["watch-2", "watch-1"])
         self.assertEqual(_item_dedupe_key(first_watch), "event:evt-1")
 
-    def _write_fixture_workspace(self, workspace: Path, *, broken_rss: bool = False) -> None:
+    def _write_fixture_workspace(self, workspace: Path, *, include_rss: bool = False) -> None:
         (workspace / "planning").mkdir(parents=True, exist_ok=True)
         (workspace / "data" / "runs").mkdir(parents=True, exist_ok=True)
         (workspace / "planning" / "report-style.md").write_text(
             "# Report Style\n\n## Audience\n\nDaily operator.\n\n## Language\n\nChinese commentary.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nPrefer high signal.\n",
             encoding="utf-8",
         )
-        rss_url = "file:///definitely-missing-feed.xml" if broken_rss else self._uri("rss.xml")
         sources_toml = (
             '[[sources]]\n'
             'id = "fixture-github-user"\n'
@@ -217,15 +214,6 @@ class CollectionTest(unittest.TestCase):
             'notes = "Fixture source."\n'
             'fetch.handle = "sample-researcher"\n'
             'fetch.events_url = "' + self._uri("github_user_events.json") + '"\n'
-            '\n'
-            '[[sources]]\n'
-            'id = "fixture-rss"\n'
-            'title = "Fixture RSS"\n'
-            'kind = "rss"\n'
-            'enabled = true\n'
-            'notes = "Fixture source."\n'
-            'fetch.url = "' + rss_url + '"\n'
-            '\n'
             '[[sources]]\n'
             'id = "fixture-web"\n'
             'title = "Fixture Web"\n'
@@ -242,6 +230,17 @@ class CollectionTest(unittest.TestCase):
             'notes = "Fixture source."\n'
             'fetch.url = "https://example.com/conference/program/"\n'
         )
+        if include_rss:
+            sources_toml += (
+                '\n'
+                '[[sources]]\n'
+                'id = "fixture-rss"\n'
+                'title = "Fixture RSS"\n'
+                'kind = "rss"\n'
+                'enabled = true\n'
+                'notes = "Legacy RSS source."\n'
+                'fetch.url = "https://example.com/feed.xml"\n'
+            )
         (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
 
     def _make_templates_dir(self, root: Path) -> Path:
@@ -299,12 +298,11 @@ class ResolveSourceTest(unittest.TestCase):
         self.assertEqual(resolved["fetch"]["handle"], "sample-researcher")
         self.assertEqual(resolved["id"], "sample-researcher")
 
-    def test_resolve_source_detects_feed_url(self) -> None:
-        resolved = resolve_source("https://example.com/feed.xml", user_label="")
-        self.assertEqual(resolved["kind"], "rss")
-        self.assertEqual(resolved["fetch"]["url"], "https://example.com/feed.xml")
+    def test_resolve_source_rejects_feed_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "RSS/Atom sources are no longer supported"):
+            resolve_source("https://example.com/feed.xml", user_label="")
 
-    def test_resolve_source_discovers_rss_from_html(self) -> None:
+    def test_resolve_source_rejects_pages_that_advertise_feeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             feed_uri = (root / "feed.xml").resolve().as_uri()
@@ -318,9 +316,20 @@ class ResolveSourceTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            with self.assertRaisesRegex(ValueError, "RSS/Atom sources are no longer supported"):
+                resolve_source(page.resolve().as_uri(), user_label="")
+
+    def test_resolve_source_resolves_plain_website_to_web(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            page = root / "index.html"
+            page.write_text(
+                "<html><head><title>Example Security</title></head><body>hello</body></html>",
+                encoding="utf-8",
+            )
             resolved = resolve_source(page.resolve().as_uri(), user_label="")
-        self.assertEqual(resolved["kind"], "rss")
-        self.assertEqual(resolved["fetch"]["url"], feed_uri)
+        self.assertEqual(resolved["kind"], "web")
+        self.assertEqual(resolved["fetch"]["url"], page.resolve().as_uri())
         self.assertEqual(resolved["title"], "Example Security")
 
     def test_resolve_source_falls_back_to_web_when_fetch_fails(self) -> None:
@@ -344,6 +353,21 @@ class ResolveSourceTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["result"]["kind"], "github_user")
+
+    def test_resolve_source_cli_rejects_feed_url(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        script_path = repo_root / "skills" / "daily-security-digest" / "scripts" / "resolve_source.py"
+        result = subprocess.run(
+            ["python3", str(script_path), "--input", "https://example.com/feed.xml"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo_root,
+        )
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertIn("RSS/Atom sources are no longer supported", payload["error"])
 
 
 class WebCollectionCliTest(unittest.TestCase):

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from . import github, rss
+from . import github
 
 _ADAPTERS = {
     "github_user": github,
     "github_feed": github,
-    "rss": rss,
     "web": None,
 }
 

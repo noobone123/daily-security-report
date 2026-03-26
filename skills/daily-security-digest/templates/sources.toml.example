@@ -3,11 +3,11 @@
 #
 # Example:
 #   [[sources]]
-#   id = "my-feed"
-#   title = "My Security Feed"
-#   kind = "rss"          # rss | github_user | github_feed | web
+#   id = "my-security-site"
+#   title = "My Security Site"
+#   kind = "web"          # github_user | github_feed | web
 #   enabled = true
-#   fetch.url = "https://example.com/feed.xml"
+#   fetch.url = "https://example.com/security"
 #
 # GitHub home feed example:
 #   [[sources]]

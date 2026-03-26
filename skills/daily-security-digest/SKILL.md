@@ -10,7 +10,7 @@ argument-hint: "[date] [--days N]"
 
 Use this workflow as a thin orchestration layer around shared Python scripts and a small number of LLM subagents.
 
-API, RSS, source resolution, and web collection are all handled by shared Python CLIs so the same runtime works in Claude Code and Codex.
+GitHub API collection, source resolution, and web collection are all handled by shared Python CLIs so the same runtime works in Claude Code and Codex.
 Only the source-scoped summarization and final report-writing steps rely on LLM subagents.
 
 ## Path Conventions
@@ -75,7 +75,7 @@ Ask the user:
 
 When the user replies with URLs or usernames:
 1. Run `python3 {skillDir}/scripts/resolve_source.py --input "<value>"` once per input. Add `--user-label "<label>"` when the user provided a label.
-   The resolver maps `github.com` to `github_feed`, GitHub usernames to `github_user`, rejects X/Twitter URLs, and discovers RSS feeds for websites when possible.
+   The resolver maps `github.com` to `github_feed`, GitHub usernames to `github_user`, rejects X/Twitter URLs, rejects RSS/Atom feeds, and resolves normal websites to `web`.
 2. Collect all JSON results and present the resolved source list to the user.
 3. Ask: "Does this look right? Anything to add, remove, or change?"
 
@@ -106,7 +106,7 @@ When the user replies with topics:
 
 If any check fails, re-run the relevant phase above.
 
-### Step 1: Collect API/RSS sources (script)
+### Step 1: Collect script-backed sources (script)
 
 ```bash
 python3 {skillDir}/scripts/collect_materials.py \
@@ -241,7 +241,6 @@ The collector reads only `sources.toml`; `topics.md` and `report-style.md` are f
 |------|-----------|-------|
 | `github_user` | Script | Public GitHub profile event feed (API JSON) |
 | `github_feed` | Script | Authenticated GitHub home feed (`fetch.handle = "@authenticated"`, requires `GITHUB_TOKEN`) |
-| `rss` | Script | RSS/Atom feed (XML) |
 | `web` | Parallel subagents | One `web-source-collector` per source, same-domain only, max_hops = 3, up to 20 items per source |
 
 ## Source Management (user-initiated only)
