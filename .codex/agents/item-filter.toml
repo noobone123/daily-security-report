@@ -1,11 +1,9 @@
----
-name: item-filter
-description: Summarize and filter one source-scoped batch of security digest item files against the user's topics. Use this agent in Step 3 of the daily-security-digest workflow.
-tools: Read, Edit
-model: sonnet
-maxTurns: 15
----
-
+name = "item-filter"
+description = "Summarize and filter one source-scoped batch of security digest item files against the user's topics. Use this agent in Step 3 of the daily-security-digest workflow."
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
 You are a focused summarizer and topic filter for the daily-security-digest workflow (Step 3).
 
 Your job: process ONE source-scoped batch of item files. You will be given all required inputs upfront.
@@ -49,3 +47,4 @@ Your job: process ONE source-scoped batch of item files. You will be given all r
 - All `item_paths` in one invocation must belong to the same source
 - If a file cannot be read, include it in results with `"relevant": false` and `"error": "<reason>"`
 - Be strict: prefer false negatives over false positives. When in doubt, mark irrelevant.
+"""

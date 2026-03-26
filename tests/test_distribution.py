@@ -23,8 +23,13 @@ class DistributionTest(unittest.TestCase):
         self.assertEqual(manifest["name"], "daily-security-report")
         self.assertEqual(manifest["version"], "0.2.0")
         self.assertTrue((self.skill_dir / "SKILL.md").exists())
-        for agent_name in ("source-resolver", "web-source-collector", "item-filter", "report-writer"):
+        self.assertTrue((self.repo_root / "AGENTS.md").exists())
+        self.assertTrue((self.repo_root / "scripts" / "codex_install.sh").exists())
+        self.assertFalse((self.repo_root / "definitions").exists())
+        self.assertFalse((self.repo_root / "scripts" / "generate_platform_artifacts.py").exists())
+        for agent_name in ("web-source-collector", "item-filter", "report-writer"):
             self.assertTrue((self.repo_root / "agents" / f"{agent_name}.md").exists())
+            self.assertTrue((self.repo_root / ".codex" / "agents" / f"{agent_name}.toml").exists())
 
     def test_claude_install_script_creates_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -45,10 +50,58 @@ class DistributionTest(unittest.TestCase):
             config_text = config_path.read_text(encoding="utf-8")
             self.assertIn(str(self.repo_root.resolve()), config_text)
 
-            for agent_name in ("source-resolver", "web-source-collector", "item-filter", "report-writer"):
+            for agent_name in ("web-source-collector", "item-filter", "report-writer"):
                 agent_link = claude_dir / "agents" / f"{agent_name}.md"
                 self.assertTrue(agent_link.is_symlink())
                 self.assertEqual(agent_link.resolve(), (self.repo_root / "agents" / f"{agent_name}.md").resolve())
+
+    def test_codex_install_script_creates_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            codex_dir = Path(tmpdir) / ".codex"
+            agents_home = Path(tmpdir) / ".agents"
+            result = subprocess.run(
+                ["bash", str(self.repo_root / "scripts" / "codex_install.sh"), "--codex-dir", str(codex_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"HOME": str(home)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+            skill_link = agents_home / "skills" / "daily-security-report"
+            self.assertTrue(skill_link.is_symlink())
+            self.assertEqual(skill_link.resolve(), (self.repo_root / "skills").resolve())
+            for agent_name in ("web-source-collector", "item-filter", "report-writer"):
+                agent_link = codex_dir / "agents" / f"{agent_name}.toml"
+                self.assertTrue(agent_link.is_symlink())
+                self.assertEqual(agent_link.resolve(), (self.repo_root / ".codex" / "agents" / f"{agent_name}.toml").resolve())
+
+    def test_codex_install_script_copy_mode_copies_skill_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            codex_dir = Path(tmpdir) / ".codex"
+            agents_home = Path(tmpdir) / ".agents"
+            result = subprocess.run(
+                ["bash", str(self.repo_root / "scripts" / "codex_install.sh"), "--codex-dir", str(codex_dir), "--copy"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={"HOME": str(home)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+            skill_dir = agents_home / "skills" / "daily-security-report"
+            self.assertTrue(skill_dir.is_dir())
+            self.assertFalse(skill_dir.is_symlink())
+            self.assertTrue((skill_dir / "daily-security-digest" / "SKILL.md").exists())
+            self.assertTrue((skill_dir / "daily-security-digest" / "scripts" / "bootstrap_planning.py").exists())
+            self.assertTrue((skill_dir / "daily-security-digest" / "templates" / "sources.toml.example").exists())
+            self.assertTrue((skill_dir / "daily-security-digest" / "config.toml").exists())
+            for agent_name in ("web-source-collector", "item-filter", "report-writer"):
+                agent_path = codex_dir / "agents" / f"{agent_name}.toml"
+                self.assertTrue(agent_path.exists())
+                self.assertFalse(agent_path.is_symlink())
 
     def test_bootstrap_planning_uses_skill_templates_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,24 +151,27 @@ class DistributionTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertFalse((claude_dir / "skills" / "daily-security-digest").exists())
-            self.assertFalse((claude_dir / "agents" / "source-resolver.md").exists())
+            self.assertFalse((claude_dir / "agents" / "item-filter.md").exists())
             config_path = self.skill_dir / "config.toml"
             self.assertTrue(config_path.exists())
             self.assertIn(str(self.repo_root.resolve()), config_path.read_text(encoding="utf-8"))
 
     def test_repo_has_single_canonical_agent_set(self) -> None:
         self.assertFalse((self.repo_root / ".claude" / "agents" / "source-resolver.md").exists())
-        self.assertFalse((self.repo_root / ".claude" / "agents" / "web-source-collector.md").exists())
         self.assertFalse((self.repo_root / ".claude" / "agents" / "item-filter.md").exists())
         self.assertFalse((self.repo_root / ".claude" / "agents" / "report-writer.md").exists())
+        self.assertFalse((self.repo_root / "agents" / "source-resolver.md").exists())
+        self.assertFalse((self.repo_root / ".codex" / "agents" / "source-resolver.toml").exists())
 
-    def test_source_resolver_contract_documents_handle(self) -> None:
-        text = (self.repo_root / "agents" / "source-resolver.md").read_text(encoding="utf-8")
+    def test_resolve_source_contract_documents_handle(self) -> None:
+        text = (self.skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("resolve_source.py", text)
         self.assertIn("fetch.handle", text)
         self.assertIn("github_feed", text)
-        self.assertIn("x_home", text)
-        self.assertIn("x.com/home", text)
         self.assertIn("@authenticated", text)
+        self.assertNotIn("x_home", text)
+        self.assertNotIn("x.com/home", text)
+        self.assertNotIn("twitter.com/home", text)
         self.assertNotIn("fetch.username", text)
 
     def test_docs_publish_github_feed_kind(self) -> None:
@@ -124,13 +180,16 @@ class DistributionTest(unittest.TestCase):
         template = (self.templates_dir / "sources.toml.example").read_text(encoding="utf-8")
         for text in (readme, skill, template):
             self.assertIn("github_feed", text)
-            self.assertIn("x_home", text)
+            self.assertNotIn("x_home", text)
         self.assertIn("@authenticated", readme)
         self.assertIn("@authenticated", skill)
         self.assertIn("@authenticated", template)
-        self.assertIn("X_USER_ACCESS_TOKEN", readme)
-        self.assertIn("X_USER_ACCESS_TOKEN", skill)
-        self.assertIn("X_USER_ACCESS_TOKEN", template)
+        self.assertNotIn("X_API_KEY", readme)
+        self.assertNotIn("X_ACCESS_TOKEN_SECRET", readme)
+        self.assertNotIn("X_API_KEY", skill)
+        self.assertNotIn("X_ACCESS_TOKEN_SECRET", skill)
+        self.assertNotIn("X_API_KEY", template)
+        self.assertNotIn("X_ACCESS_TOKEN_SECRET", template)
 
     def test_readme_links_to_github_feed_setup_doc(self) -> None:
         readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
@@ -138,37 +197,60 @@ class DistributionTest(unittest.TestCase):
         self.assertTrue(doc_path.exists())
         self.assertIn("docs/github-feed-setup.md", readme)
 
-    def test_readme_links_to_x_home_setup_doc(self) -> None:
+    def test_readme_does_not_link_to_x_home_setup_doc(self) -> None:
         readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
         doc_path = self.repo_root / "docs" / "x-home-setup.md"
-        self.assertTrue(doc_path.exists())
-        self.assertIn("docs/x-home-setup.md", readme)
+        self.assertFalse(doc_path.exists())
+        self.assertNotIn("docs/x-home-setup.md", readme)
         self.assertNotIn("X_API_KEY", readme)
         self.assertNotIn("X_API_SECRET", readme)
+        self.assertNotIn("X_ACCESS_TOKEN", readme)
         self.assertNotIn("X_ACCESS_TOKEN_SECRET", readme)
-
-    def test_x_home_setup_doc_is_concise_and_bearer_focused(self) -> None:
-        text = (self.repo_root / "docs" / "x-home-setup.md").read_text(encoding="utf-8")
-        self.assertIn("本项目目前只需要一个环境变量", text)
-        self.assertIn("X_USER_ACCESS_TOKEN", text)
-        self.assertIn("/2/users/me", text)
-        self.assertIn("reverse_chronological", text)
-        self.assertNotIn("X_API_KEY", text)
-        self.assertNotIn("X_API_SECRET", text)
-        self.assertNotIn("X_ACCESS_TOKEN_SECRET", text)
 
     def test_item_filter_contract_is_source_scoped(self) -> None:
         text = (self.repo_root / "agents" / "item-filter.md").read_text(encoding="utf-8")
         self.assertIn("source_id", text)
         self.assertIn("same source", text)
         self.assertIn("All `item_paths` in one invocation must belong to the same source", text)
+        codex_text = (self.repo_root / ".codex" / "agents" / "item-filter.toml").read_text(encoding="utf-8")
+        self.assertIn("source_id", codex_text)
+        self.assertIn("same source", codex_text)
+
+    def test_web_source_collector_contract_documents_parallel_web_collection(self) -> None:
+        claude_text = (self.repo_root / "agents" / "web-source-collector.md").read_text(encoding="utf-8")
+        codex_text = (self.repo_root / ".codex" / "agents" / "web-source-collector.toml").read_text(encoding="utf-8")
+        for text in (claude_text, codex_text):
+            self.assertIn("max_hops", text)
+            self.assertIn("same domain", text)
+            self.assertIn("20", text)
+            self.assertIn("source_url", text)
+        self.assertIn("WebFetch", claude_text)
+        self.assertIn("web/search", codex_text)
 
     def test_skill_documents_source_scoped_filter_batches(self) -> None:
         text = (self.skill_dir / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("build_filter_batches.py", text)
+        self.assertIn("parallel subagents", text)
+        self.assertIn("web-source-collector", text)
+        self.assertIn("same-domain", text)
+        self.assertIn("20 items per source", text)
         self.assertIn("<= 30", text)
         self.assertIn("chunks of 10", text)
         self.assertIn("source_id, source_title, item_paths", text)
+        self.assertNotIn("collect_web_sources.py", text)
+        self.assertNotIn("${CLAUDE_SKILL_DIR}", text)
+
+    def test_readme_mentions_parallel_web_collectors(self) -> None:
+        readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
+        self.assertIn("并行", readme)
+        self.assertIn("web-source-collector", readme)
+
+    def test_planning_sources_include_anthropic_engineering(self) -> None:
+        text = (self.repo_root / "planning" / "sources.toml").read_text(encoding="utf-8")
+        self.assertIn('id = "anthropic-engineering"', text)
+        self.assertIn('title = "Anthropic Engineering"', text)
+        self.assertIn('kind = "web"', text)
+        self.assertIn('fetch.url = "https://www.anthropic.com/engineering"', text)
 
 
 class GithubUserHandleContractTest(unittest.TestCase):

@@ -1,11 +1,9 @@
----
-name: report-writer
-description: Write the final daily security digest report from filtered item files. Use this agent in Step 4 of the daily-security-digest workflow.
-tools: Read, Write, Glob
-model: sonnet
-maxTurns: 10
----
-
+name = "report-writer"
+description = "Write the final daily security digest report from filtered item files. Use this agent in Step 4 of the daily-security-digest workflow."
+model = "gpt-5.4"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
 You are a focused report writer for the daily-security-digest workflow (Step 4).
 
 Your job: read filtered items and produce a polished `report.md`. All inputs are provided upfront.
@@ -50,3 +48,4 @@ Your job: read filtered items and produce a polished `report.md`. All inputs are
 - Write ONLY to `{workspace}/data/runs/<run_date>/report.md`
 - Do NOT modify item files, `index.md`, `manifest.json`, or `filtered/` contents
 - Respond with the absolute path of the written `report.md`
+"""

@@ -3,12 +3,18 @@
 <!-- The agent will guide you through setting up topics on first run. -->
 <!-- IMPORTANT: `## All` catch-all headings are NOT valid. -->
 <!-- Each topic MUST have ### Care About and ### Usually Ignore subsections. -->
+<!-- Prefer specific signals in Care About instead of repeating the topic title verbatim. -->
 <!--
-## Cloud Security
+## Software Security Research and AI Progress
 ### Care About
-Cloud detection engineering, detections-as-code, cloud-native security tooling.
+- Vulnerability analysis and discovery
+- Program analysis techniques such as fuzzing, static analysis, symbolic execution, emulation, and reverse engineering
+- New vulnerability research methods and notable vulnerability disclosures
+- AI agents or large language model progress that is relevant to software security work
 ### Usually Ignore
-Generic marketing, vendor press releases.
+- Generic marketing
+- Reposts with no added value
+- Content without technical depth
 ### Reporting Angle
-Focus on practical techniques and tooling updates.
+Focus on practical techniques, research ideas, tooling updates, and write-ups with technical substance.
 -->

@@ -12,6 +12,7 @@ from unittest import mock
 from build_filter_batches import build_batches_for_run
 from skill_lib import (
     CollectedItem,
+    FetchError,
     ValidationError,
     _item_dedupe_key,
     config_path_for_templates,
@@ -21,6 +22,7 @@ from skill_lib import (
     find_last_window_end,
     load_seen_item_keys,
     load_seen_urls,
+    resolve_source,
     run_collection,
     sort_items,
     write_workspace_config,
@@ -278,6 +280,77 @@ class CollectionTest(unittest.TestCase):
         )
 
 
+class ResolveSourceTest(unittest.TestCase):
+    def test_resolve_source_detects_github_feed(self) -> None:
+        resolved = resolve_source("https://github.com/", user_label="")
+        self.assertEqual(resolved["kind"], "github_feed")
+        self.assertEqual(resolved["fetch"]["handle"], "@authenticated")
+        self.assertIn("GITHUB_TOKEN", resolved["notes"])
+
+    def test_resolve_source_rejects_x_urls(self) -> None:
+        with self.assertRaisesRegex(ValueError, "X/Twitter sources are no longer supported"):
+            resolve_source("https://x.com/home", user_label="")
+        with self.assertRaisesRegex(ValueError, "X/Twitter sources are no longer supported"):
+            resolve_source("https://twitter.com/home", user_label="")
+
+    def test_resolve_source_detects_github_username(self) -> None:
+        resolved = resolve_source("sample-researcher", user_label="")
+        self.assertEqual(resolved["kind"], "github_user")
+        self.assertEqual(resolved["fetch"]["handle"], "sample-researcher")
+        self.assertEqual(resolved["id"], "sample-researcher")
+
+    def test_resolve_source_detects_feed_url(self) -> None:
+        resolved = resolve_source("https://example.com/feed.xml", user_label="")
+        self.assertEqual(resolved["kind"], "rss")
+        self.assertEqual(resolved["fetch"]["url"], "https://example.com/feed.xml")
+
+    def test_resolve_source_discovers_rss_from_html(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            feed_uri = (root / "feed.xml").resolve().as_uri()
+            page = root / "index.html"
+            page.write_text(
+                (
+                    "<html><head>"
+                    "<title>Example Security</title>"
+                    f'<link rel="alternate" type="application/rss+xml" href="{feed_uri}">'
+                    "</head><body>hello</body></html>"
+                ),
+                encoding="utf-8",
+            )
+            resolved = resolve_source(page.resolve().as_uri(), user_label="")
+        self.assertEqual(resolved["kind"], "rss")
+        self.assertEqual(resolved["fetch"]["url"], feed_uri)
+        self.assertEqual(resolved["title"], "Example Security")
+
+    def test_resolve_source_falls_back_to_web_when_fetch_fails(self) -> None:
+        with mock.patch("skill_lib.HttpClient.get_text", side_effect=FetchError("boom")):
+            resolved = resolve_source("https://example.com/security", user_label="")
+        self.assertEqual(resolved["kind"], "web")
+        self.assertEqual(resolved["fetch"]["url"], "https://example.com/security")
+        self.assertIn("boom", resolved["notes"])
+
+    def test_resolve_source_cli_returns_json(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        script_path = repo_root / "skills" / "daily-security-digest" / "scripts" / "resolve_source.py"
+        result = subprocess.run(
+            ["python3", str(script_path), "--input", "sample-researcher"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=repo_root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["kind"], "github_user")
+
+
+class WebCollectionCliTest(unittest.TestCase):
+    def test_placeholder(self) -> None:
+        self.assertTrue(True)
+
+
 class ManifestFieldsTest(unittest.TestCase):
     """Tests for manifest fields added in Feature 2 (warnings, collected_urls)."""
 
@@ -397,47 +470,6 @@ class GithubFeedCollectionTest(unittest.TestCase):
             'kind = "github_feed"\n'
             'enabled = true\n'
             'fetch.handle = "' + handle + '"\n'
-        )
-        (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
-
-    def _make_templates_dir(self, root: Path) -> Path:
-        templates_dir = root / "skill" / "templates"
-        templates_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(self.skill_src / "templates", templates_dir)
-        return templates_dir
-
-
-class XHomeCollectionTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.repo_root = Path(__file__).resolve().parents[1]
-        self.skill_src = self.repo_root / "skills" / "daily-security-digest"
-
-    def test_x_home_without_credentials_warns_and_records_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            self._write_x_home_workspace(workspace)
-            templates_dir = self._make_templates_dir(Path(tmpdir))
-            write_workspace_config(config_path_for_templates(templates_dir), workspace)
-            with mock.patch.dict("os.environ", {}, clear=True):
-                manifest = run_collection(templates_dir, date_slug="2026-03-18", timezone="Asia/Shanghai")
-        x_warnings = [warning for warning in manifest["warnings"] if "X user access token" in warning]
-        self.assertEqual(len(x_warnings), 1)
-        self.assertEqual(manifest["failure_count"], 1)
-        self.assertEqual(manifest["item_count"], 0)
-        self.assertIn("x_home requires X_USER_ACCESS_TOKEN", manifest["failures"][0]["error"])
-
-    def _write_x_home_workspace(self, workspace: Path) -> None:
-        (workspace / "planning").mkdir(parents=True, exist_ok=True)
-        (workspace / "planning" / "report-style.md").write_text(
-            "# Report Style\n\n## Audience\n\nAnalyst.\n\n## Language\n\nEnglish.\n\n## Output Format\n\nMarkdown.\n\n## Extra Instructions\n\nKeep it short.\n",
-            encoding="utf-8",
-        )
-        sources_toml = (
-            '[[sources]]\n'
-            'id = "fixture-x-home"\n'
-            'title = "Fixture X Home"\n'
-            'kind = "x_home"\n'
-            'enabled = true\n'
         )
         (workspace / "planning" / "sources.toml").write_text(sources_toml, encoding="utf-8")
 

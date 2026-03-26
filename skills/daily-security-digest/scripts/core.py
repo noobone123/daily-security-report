@@ -17,7 +17,6 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from platforms import SUPPORTED_SOURCE_KINDS, adapter_for
-from platforms import x as x_platform
 
 ALLOWED_SOURCE_KINDS = set(SUPPORTED_SOURCE_KINDS)
 GITHUB_API_VERSION = "2022-11-28"
@@ -341,10 +340,6 @@ def run_collection(templates_dir: Path, *, date_slug: str, timezone: str, days: 
         warnings.append("GITHUB_TOKEN not set. GitHub API rate limit is 60 requests/hour. Set the environment variable for 5000 req/hr.")
     if any(s.kind == "github_feed" for s in script_sources) and not client.github_token:
         warnings.append("GITHUB_TOKEN is required for github_feed sources. Set the environment variable for authenticated GitHub home feed access.")
-    if any(s.kind == "x_home" for s in script_sources):
-        x_warning = x_platform.missing_credentials_warning()
-        if x_warning:
-            warnings.append(x_warning)
     for source in script_sources:
         try:
             raw_records = fetch_raw_records(source, client=client, fetched_at=fetched_at)

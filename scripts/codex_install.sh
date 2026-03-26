@@ -3,38 +3,34 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/claude_install.sh [--claude-dir PATH] [--copy] [--config-only]
+Usage: scripts/codex_install.sh [--codex-dir PATH] [--copy]
 
-Install the canonical skill and subagent definitions from this repository into
-Claude Code's personal standalone directories.
+Install the Daily Security Digest Codex skill and subagents into
+Codex's personal standalone directories.
 
 By default this writes into:
-  ~/.claude/skills/daily-security-digest
-  ~/.claude/agents/web-source-collector.md
-  ~/.claude/agents/item-filter.md
-  ~/.claude/agents/report-writer.md
+  ~/.agents/skills/daily-security-report
+  ~/.codex/agents/web-source-collector.toml
+  ~/.codex/agents/item-filter.toml
+  ~/.codex/agents/report-writer.toml
 
 It also writes:
   skills/daily-security-digest/config.toml
 EOF
 }
 
-CLAUDE_DIR="${HOME}/.claude"
+CODEX_DIR="${HOME}/.codex"
+AGENTS_HOME="${HOME}/.agents"
 COPY_MODE=0
-CONFIG_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --claude-dir)
-      CLAUDE_DIR="${2:-}"
+    --codex-dir)
+      CODEX_DIR="${2:-}"
       shift 2
       ;;
     --copy)
       COPY_MODE=1
-      shift
-      ;;
-    --config-only)
-      CONFIG_ONLY=1
       shift
       ;;
     -h|--help)
@@ -101,34 +97,26 @@ install_item() {
     return 0
   fi
 
-  echo "Symlink creation failed for ${target}. Use plugin loading or rerun with --copy." >&2
+  echo "Symlink creation failed for ${target}. Rerun with --copy." >&2
   exit 1
 }
 
-write_config() {
-  cat > "${CONFIG_PATH}" <<EOF
+cat > "${CONFIG_PATH}" <<EOF
 workspace_root = "${REPO_ROOT}"
 EOF
-}
 
-write_config
+CODEX_DIR="$(mkdir -p "${CODEX_DIR}" && cd "${CODEX_DIR}" && pwd)"
+AGENTS_HOME="$(mkdir -p "${AGENTS_HOME}" && cd "${AGENTS_HOME}" && pwd)"
+AGENTS_DIR="${CODEX_DIR}/agents"
+SKILLS_DIR="${AGENTS_HOME}/skills"
+mkdir -p "${AGENTS_DIR}" "${SKILLS_DIR}"
 
-if [[ "${CONFIG_ONLY}" -eq 1 ]]; then
-  echo "Wrote workspace config to ${CONFIG_PATH}"
-  exit 0
-fi
-
-CLAUDE_DIR="$(mkdir -p "${CLAUDE_DIR}" && cd "${CLAUDE_DIR}" && pwd)"
-SKILLS_DIR="${CLAUDE_DIR}/skills"
-AGENTS_DIR="${CLAUDE_DIR}/agents"
-
-mkdir -p "${SKILLS_DIR}" "${AGENTS_DIR}"
-
-install_item "${REPO_ROOT}/skills/daily-security-digest" "${SKILLS_DIR}/daily-security-digest"
+install_item "${REPO_ROOT}/skills" "${SKILLS_DIR}/daily-security-report"
 
 for agent in web-source-collector item-filter report-writer; do
-  install_item "${REPO_ROOT}/agents/${agent}.md" "${AGENTS_DIR}/${agent}.md"
+  install_item "${REPO_ROOT}/.codex/agents/${agent}.toml" "${AGENTS_DIR}/${agent}.toml"
 done
 
-echo "Installed Daily Security Digest into ${CLAUDE_DIR}"
+echo "Installed Daily Security Digest Codex skills container into ${SKILLS_DIR}/daily-security-report"
+echo "Installed Daily Security Digest Codex subagents into ${AGENTS_DIR}"
 echo "Wrote workspace config to ${CONFIG_PATH}"
