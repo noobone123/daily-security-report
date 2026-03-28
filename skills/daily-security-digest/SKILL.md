@@ -43,14 +43,26 @@ After running the script, read its JSON output and tell the user:
 
 ### Step 0: Source & Topic Onboarding (interactive gate)
 
-> **MANDATORY STOP**: This step requires multiple rounds of user interaction.
+**Returning user shortcut** — read both planning files and check:
+1. `{workspaceDir}/planning/sources.toml` has at least one `[[sources]]` entry with `enabled = true`
+2. `{workspaceDir}/planning/topics.md` has at least one `##` heading that is not `## All`
+
+If BOTH conditions are true, this is a returning user:
+- Tell the user: `"Found <N> enabled sources, topics: [<heading1>, <heading2>, …]. Proceeding to collection."`
+- Skip directly to Step 1. Do NOT run any onboarding phases.
+
+If either condition is NOT met, this is first-time setup. Continue below.
+
+---
+
+> **MANDATORY STOP**: The onboarding flow below requires multiple rounds of user interaction.
 > You MUST NOT proceed to Step 1 until the user has provided their own sources AND their own topics AND confirmed both.
 
-> **FORBIDDEN ACTIONS**:
+> **FORBIDDEN ACTIONS** (apply only during first-time onboarding):
 > - NEVER populate `sources.toml` with URLs from training data or general knowledge
 > - NEVER use `## All` or any catch-all heading in `topics.md`
 > - NEVER write to `sources.toml` or `topics.md` before the user has replied with content
-> - NEVER generate topic names, "Care About" lists, or "Usually Ignore" lists yourself
+> - NEVER generate topic names or topic content yourself
 > - NEVER proceed to Step 1 if the user has not provided at least one URL or username
 > - NEVER treat example file comments as valid content
 
@@ -58,7 +70,6 @@ After running the script, read its JSON output and tell the user:
 1. `{workspaceDir}/planning/sources.toml` has zero `[[sources]]` entries, or all have `enabled = false`
 2. `{workspaceDir}/planning/topics.md` has no `##` headings (only comments)
 3. `{workspaceDir}/planning/topics.md` has a `## All` catch-all heading
-4. Any topic in `{workspaceDir}/planning/topics.md` lacks `### Care About` or `### Usually Ignore`
 
 If first-time setup is detected, run all three phases below.
 
@@ -85,7 +96,7 @@ When the user confirms, write all sources to `{workspaceDir}/planning/sources.to
 
 **Phase 3 — Ask for topics**:
 
-If `topics.md` needs setup (first-time conditions 2-4 above):
+If `topics.md` needs setup (first-time conditions 2-3 above):
 
 Ask the user:
 
@@ -96,13 +107,11 @@ Ask the user:
 When the user replies with topics:
 1. For each topic the user names, ask: "What specifically do you care about within <topic>? And what should I ignore?"
 2. **STOP HERE.** Wait for the user's answers.
-3. Only after the user answers, write `## Topic Name` sections with `### Care About`, `### Usually Ignore`, and `### Reporting Angle` subsections using the user's exact words.
+3. Only after the user answers, write `## Topic Name` sections using the user's exact words. The user may organize content freely under each heading — do not enforce any particular sub-heading structure.
 
 **Gate check before Step 1** — verify ALL of the following before proceeding:
 - `{workspaceDir}/planning/sources.toml` has at least one `[[sources]]` entry with `enabled = true`
-- Every source URL traces back to a user message in this conversation
 - `{workspaceDir}/planning/topics.md` has at least one `## Topic` heading (not `## All`)
-- Every topic has non-empty `### Care About` and `### Usually Ignore`
 
 If any check fails, re-run the relevant phase above.
 
@@ -132,12 +141,18 @@ Before moving on to Step 2, repeat the resolved write location to the user in on
 - planning directory
 - run output directory
 
-### Step 2: Collect web sources (`MUST` using parallel subagents for each web source)
+### Step 2: Collect web sources (`MUST` using bounded-concurrency parallel subagents)
 
 Read `{workspaceDir}/data/runs/YYYY-MM-DD/manifest.json` → `agent_sources` array.
 If there are no `agent_sources`, skip to Step 3.
 
-Launch one `web-source-collector` per web source in parallel.
+Before launching collectors, determine the concurrency cap `N`:
+
+1. Read project `{workspaceDir}/.codex/config.toml` and use ``[agents].max_threads`` if present.
+2. If project config is absent, unreadable, or does not set it, read global `~/.codex/config.toml` and use ``[agents].max_threads`` if present.
+3. If neither config provides a usable value, assume `6`.
+
+Treat `N` as the maximum number of concurrently open subagent threads for this step.
 
 Each collector receives:
 
@@ -152,14 +167,27 @@ Collection rules:
 - up to 20 items per source
 - one collector handles one source end-to-end
 
+Run this step as a rolling worker pool:
+
+- Build a queue from `agent_sources`.
+- Launch up to `N` `web-source-collector` subagents initially.
+- Whenever one collector finishes, immediately launch the next queued source.
+- If a spawn attempt fails with a thread-limit error, do not mark that source failed. Instead, treat it as temporary capacity exhaustion, requeue it, wait for an active collector to finish or close, and retry.
+- Do not mark that source failed unless the collector itself runs and returns a real source-level failure.
+
+Worked example:
+
+- If there are 10 sources and `max_threads = 6`, launch the first 6 and keep the remaining 4 queued.
+- As each running collector finishes, immediately launch the next queued source until the queue is empty.
+
 Each collector should use the current platform's native web tooling to inspect the entry page, follow same-domain candidate links, and write high-signal content pages to `items/`.
 
-After all collectors complete:
+Only after the queue is empty and all active collectors complete:
 - merge their `written`, `skipped`, and `failed` results
 - report any failures to the user with source name and reason
 - proceed to Step 3
 
-### Step 3: Summarize and filter by topic (`MUST` using parallel subagents for each web source)
+### Step 3: Summarize and filter by topic (`MUST` using bounded-concurrency parallel subagents)
 
 Read `{workspaceDir}/planning/topics.md` for topic guidance.
 Run:
@@ -175,14 +203,30 @@ This helper reads item headers only, groups items by `source_id`, and builds fil
 - if a source has `> 30` items, split it into source-scoped chunks of 10
 - within a source, sort by `Published At` descending before batching
 
-For each returned batch, launch the installed `item-filter` subagent for the current platform. If the platform supports parallel subagent execution, issue all subagent calls in parallel.
+Before launching `item-filter` subagents, determine the same concurrency cap `N`:
+
+1. Read project `{workspaceDir}/.codex/config.toml` and use ``[agents].max_threads`` if present.
+2. If project config is absent, unreadable, or does not set it, read global `~/.codex/config.toml` and use ``[agents].max_threads`` if present.
+3. If neither config provides a usable value, assume `6`.
+
+For each returned batch, launch the installed `item-filter` subagent for the current platform with the same rolling worker-pool rule:
+
+- Build a queue from the returned batches.
+- Launch up to `N` batches initially.
+- Whenever one batch finishes, immediately launch the next queued source-scoped batch.
+- If a spawn attempt fails with a thread-limit error, do not mark that batch failed. Instead, treat it as temporary capacity exhaustion, requeue it, wait for an active subagent to finish or close, and retry.
+
+Worked example:
+
+- If there are 10 batches and `max_threads = 6`, launch the first 6 and keep the remaining 4 queued.
+- As each running batch finishes, immediately launch the next queued batch until the queue is empty.
 
 Each subagent receives:
 ```
 source_id, source_title, item_paths, topics_path, workspace, run_date
 ```
 
-After all subagents complete, the main agent:
+Only after the queue is empty and all active `item-filter` subagents complete, the main agent:
 1. Rewrites `{workspaceDir}/data/runs/YYYY-MM-DD/index.md` with the LLM summaries
 2. Copies relevant item files to `{workspaceDir}/data/runs/YYYY-MM-DD/filtered/`
 3. If zero items are relevant, inform the user and ask whether to relax the filter or skip the report

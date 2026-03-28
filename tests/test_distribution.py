@@ -237,6 +237,13 @@ class DistributionTest(unittest.TestCase):
         self.assertIn("<= 30", text)
         self.assertIn("chunks of 10", text)
         self.assertIn("source_id, source_title, item_paths", text)
+        self.assertIn("`[agents].max_threads`", text)
+        self.assertIn("assume `6`", text)
+        self.assertIn("Launch up to `N`", text)
+        self.assertIn("immediately launch the next queued source", text)
+        self.assertIn("requeue it", text)
+        self.assertIn("10 sources and `max_threads = 6`", text)
+        self.assertIn("10 batches and `max_threads = 6`", text)
         self.assertNotIn("collect_web_sources.py", text)
         self.assertNotIn("${CLAUDE_SKILL_DIR}", text)
 
@@ -244,6 +251,17 @@ class DistributionTest(unittest.TestCase):
         readme = (self.repo_root / "README.md").read_text(encoding="utf-8")
         self.assertIn("并行", readme)
         self.assertIn("web-source-collector", readme)
+        self.assertIn(".codex/config.toml", readme)
+        self.assertIn("[agents]", readme)
+        self.assertIn("max_threads = 10", readme)
+        self.assertIn("默认是 6", readme)
+
+    def test_skill_documents_thread_limit_retry_as_capacity_issue(self) -> None:
+        text = (self.skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("thread-limit error", text)
+        self.assertIn("do not mark that source failed", text)
+        self.assertIn("do not mark that batch failed", text)
+        self.assertIn("temporary capacity exhaustion", text)
 
     def test_planning_sources_include_anthropic_engineering(self) -> None:
         text = (self.repo_root / "planning" / "sources.toml").read_text(encoding="utf-8")

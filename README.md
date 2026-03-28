@@ -76,7 +76,7 @@ claude --plugin-dir /absolute/path/to/daily-security-report
 1. 创建 `planning/` 下的配置模板
 2. 让你提供 sources
 3. 让你提供 topics
-4. 抓取 GitHub 脚本源内容，并用 `web-source-collector` 并行采集 web sources
+4. 抓取 GitHub 脚本源内容，并用 `web-source-collector` 按并发上限滚动采集 web sources
 5. 按 topic 过滤并总结
 6. 写出最终 `report.md`
 
@@ -86,7 +86,17 @@ claude --plugin-dir /absolute/path/to/daily-security-report
 - `item-filter`
 - `report-writer`
 
-其中 web sources 由平台原生 collector 并行采集；每个 source 一个 collector，默认最多三跳、仅同域、每个 source 最多 20 篇 item。
+其中 web sources 由平台原生 collector 并行执行，但会按并发上限滚动采集；每个 source 一个 collector，默认最多三跳、仅同域、每个 source 最多 20 篇 item。
+如果没有额外配置，Codex 的 subagent 并发默认是 6，也就是默认是 6。
+
+如果你想在当前项目里覆盖这个上限，可以在项目根目录创建 `.codex/config.toml`：
+
+```toml
+[agents]
+max_threads = 10
+```
+
+这里的 `[agents]` / `max_threads = 10` 只是示例；skill 会优先读项目级 `.codex/config.toml`，没有的话再回退到全局 `~/.codex/config.toml`。
 
 ## 配置 Sources
 
